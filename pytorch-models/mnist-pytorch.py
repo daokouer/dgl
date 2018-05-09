@@ -107,7 +107,9 @@ def train(epoch):
         optimizer.zero_grad()
         # FIXME: replicate channel for resnet to run :(
         if args.model == 'resnet':
-            data = torch.cat((data, data, data), 1)
+            zeros = torch.zeros(data.shape)
+            #data = torch.cat((data, data, data), 1)
+            data = torch.cat((data, zeros, zeros), 1)
         output = model(data)
         loss = F.nll_loss(output, target)
         loss.backward()
@@ -126,7 +128,9 @@ def test():
             data, target = data.to(device), target.to(device)
             # FIXME: replicate channel for resnet to run :(
             if args.model == 'resnet':
-                data = torch.cat((data, data, data), 1)
+                zeros = torch.zeros(data.shape)
+                #data = torch.cat((data, data, data), 1)
+                data = torch.cat((data, zeros, zeros), 1)
             output = model(data)
             test_loss += F.nll_loss(output, target, size_average=False).item() # sum up batch loss
             pred = output.max(1, keepdim=True)[1] # get the index of the max log-probability

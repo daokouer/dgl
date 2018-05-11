@@ -29,8 +29,8 @@ def build_cnn(**config):
             kernel_size,
             padding=tuple((_ - 1) // 2 for _ in kernel_size),
             )
-        INIT.xavier_uniform(module.weight)
-        INIT.constant(module.bias, 0)
+        INIT.xavier_uniform_(module.weight)
+        INIT.constant_(module.bias, 0)
         cnn_list.append(module)
         if i < len(filters) - 1:
             cnn_list.append(NN.LeakyReLU())
@@ -88,7 +88,7 @@ class TreeGlimpsedClassifier(NN.Module):
                          {i: 'h%d' % i for i in range(len(G.nodes()))},
                          False
                          )
-        self.h_nodes_list = h_nodes_list = list(G.nodes)[:]
+        self.h_nodes_list = h_nodes_list = list(G.nodes)
         for h in h_nodes_list:
             G.node[h]['type'] = 'h'
         b_nodes_list = ['b%d' % i for i in range(len(h_nodes_list))]

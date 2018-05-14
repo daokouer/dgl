@@ -1,5 +1,4 @@
 import networkx as nx
-#from networkx.classes.graph import Graph
 from networkx.classes.digraph import DiGraph
 
 import torch as th
@@ -10,6 +9,11 @@ from torch.autograd import Variable as Var
 # TODO: loss functions and training
 
 class mx_Graph(DiGraph):
+    '''
+    Functions:
+        - m_func: per edge (u, v), default is u['state']
+        - u_func: per node u, default is RNN(m, u['state'])
+    '''
     def __init__(self, *args, **kargs):
         super(mx_Graph, self).__init__(*args, **kargs)
         self.set_msg_func()
@@ -23,14 +27,68 @@ class mx_Graph(DiGraph):
         for n in self.nodes:
             self.set_repr(n, h_init)
 
-    def set_repr(self, u, h_u, name='h'):
+    def set_repr(self, u, h_u, name='state'):
         assert u in self.nodes
         kwarg = {name: h_u}
         self.add_node(u, **kwarg)
 
-    def get_repr(self, u, name='h'):
+    def get_repr(self, u, name='state'):
         assert u in self.nodes
         return self.nodes[u][name]
+
+    def _nodes_or_all(self, nodes='all'):
+        return self.nodes() if nodes == 'all' else nodes
+
+    def _edges_or_all(self, edges='all'):
+        return self.edges() if edges == 'all' else edges
+
+    def register_message_func(self, message_func, edges='all', batched=False):
+        '''
+        batched: whether to do a single batched computation instead of iterating
+        message function: accepts source state tensor and edge tag tensor, and
+        returns a message tensor
+        '''
+        ebunch = self._edges_or_all(edges)
+        for e in ebunch:
+            self.edges[e]['m_func'] = message_func
+
+    def register_update_func(self, update_func, nodes='all', batched=False):
+        '''
+        batched: whether to do a single batched computation instead of iterating
+        update function: accepts a node attribute dictionary (including state and tag),
+        and a list of tuples (source node, target node, edge attribute dictionary)
+        '''
+        nodes = self._nodes_or_all(nodes)
+        for n in nodes:
+            self.node[n]['u_func'] = update_func
+
+    def update_to(self, u):
+        """Pull messages from 1-step away neighbors of u"""
+        assert u in self.nodes
+
+        msgs = []
+        for v in self.pred[u]:
+            f_msg = self.edges[(u, v)]['m_func']
+            msgs.append(f_msg(self.get_repr(v)))
+
+        f_update = self.node[u]['u_func']
+        x = self.get_repr(u)
+        x_new = f_update(x, msgs)
+        x_new = self.node[u]['u_func']
+
+        self.set_repr(u, x_new)
+
+    def update_from(self, u):
+        """Update u's 1-step away neighbors"""
+        assert u in self.nodes
+        for v in self.succ[u]:
+            self.update_to(v)
+
+    def draw(self):
+        from networkx.drawing.nx_agraph import graphviz_layout
+
+        pos = graphviz_layout(self, prog='dot')
+        nx.draw(self, pos, with_labels=True)
 
     def set_reduction_func(self):
         def _default_reduction_func(x_s):
@@ -92,32 +150,13 @@ class mx_Graph(DiGraph):
     def readout(self):
         return self.readout_func()
 
-    def update_to(self, u):
-        """Pull messages from 1-step away neighbors of u"""
-        assert u in self.nodes
-        m = self._msg_func(u=u)
-        x = self.get_repr(u)
-        # TODO: ugly hack
-        if x is None:
-            y = self._update_func(m)
-        else:
-            y = self._update_func(x, m)
-        self.set_repr(u, y)
-
-    def update_from(self, u):
-        """Update u's 1-step away neighbors"""
-        assert u in self.nodes
-        # TODO: this asks v to pull from nodes other than
-        # TODO: u, is this a good thing?
-        for v in self.succ[u]:
-            self.update_to(v)
-
     def print_all(self):
         for n in self.nodes:
             print(n, self.nodes[n])
         print()
 
 if __name__ == '__main__':
+    import matplotlib.pyplot as plt
     th.random.manual_seed(0)
 
     ''': this makes a digraph with double edges
@@ -132,6 +171,11 @@ if __name__ == '__main__':
     '''
     print("testing GRU update")
     g = mx_Graph(nx.path_graph(3))
+    g.register_update_func(nn.GRUCell(4, 4))
+    fwd_net = nn.Sequential(nn.Linear(4, 4), nn.ReLU())
+    g.register_message_func(fwd_net)
+
+    '''
     g.set_update_func(nn.GRUCell(4, 4))
     for n in g:
         g.set_repr(n, Var(th.rand(2, 4)))
@@ -154,3 +198,4 @@ if __name__ == '__main__':
     g.update_from(0)
     g.update_from(1)
     print("\t**after:"); g.print_all()
+    '''

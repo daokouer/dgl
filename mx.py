@@ -62,6 +62,17 @@ class mx_Graph(DiGraph):
         for n in nodes:
             self.node[n]['u_func'] = update_func
 
+    def update_by_edge(self, e):
+        u, v = e
+        f_msg = self.edges[(u, v)]['m_func']
+        m = f_msg(self.get_repr(u))
+        f_update = self.node[u]['u_func']
+        x = self.get_repr(u)
+        x_new = f_update(x, m)
+        x_new = self.node[u]['u_func']
+
+        self.set_repr(u, x_new)
+
     def update_to(self, u):
         """Pull messages from 1-step away neighbors of u"""
         assert u in self.nodes

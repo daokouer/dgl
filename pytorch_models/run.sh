@@ -1,1 +1,1 @@
-DATA_PATH='/Users/zhengzhang' ipython -m ipdb mnist-pytorch.py
+DATA_PATH='/Users/zhengzhang' ipython -m ipdb mnist_pytorch.py

@@ -7,6 +7,15 @@ import torch.functional as F
 import torchvision.models as MODELS
 import torch.nn.init as INIT
 
+def dfs_walk(tree, curr, l):
+    if len(tree.succ[curr]) == 0:
+        return
+    else:
+        for n in tree.succ[curr]:
+            l.append((curr, n))
+            dfs_walk(tree, n, l)
+            l.append((n, curr))
+
 t = nx.balanced_tree(2, 2)
 t_uni = nx.bfs_tree(t, 0)
 
@@ -34,34 +43,14 @@ def build_cnn(**config):
     return nn.Sequential(*cnn_list)
 
 def build_resnet_cnn(**config):
-    num_layers = config['layers']
+    n_layers = config['n_layers']
     final_pool_size = config['final_pool_size']
 
     resnet = MODELS.resnet18(pretrained=True)
-    cnn_list = list(resnet.children())[0:num_layers]
+    cnn_list = list(resnet.children())[0:n_layers]
     cnn_list.append(nn.AdaptiveMaxPool2d(final_pool_size))
 
     return nn.Sequential(*cnn_list)
-
-class ResNet(nn.Module):
-    def __init__(self, x_shape=None):
-        super(ResNet, self).__init__()
-        resnet = MODELS.resnet18(pretrained=True)
-        modules = list(resnet.children())[0:6]
-        self.resnet = nn.Sequential(*modules)
-        if x_shape is not None:
-            x = T.rand(x_shape)
-            x = self.resnet(x)
-            shape = T.tensor(x.shape)
-            fc_in = T.prod(shape[1:])
-            self.fc = nn.Linear(fc_in, 10)
-
-    def forward(self, x):
-        x = self.resnet(x)
-        B, C, H, W = x.shape
-        x = x.view(B, -1)
-        x = self.fc(x)
-        return F.log_softmax(x, dim=1)
 
 class MessageModule(nn.Module):
     def forward(self, state):
@@ -80,13 +69,22 @@ class UpdateModule(nn.Module):
                  final_pool_size=(2, 2),
                  glimpse_type='gaussian',
                  glimpse_size=(15, 15),
+                 cnn='resnet'
                  ):
+        super(UpdateModule, self).__init__()
         self.glimpse = create_glimpse(glimpse_type, glimpse_size)
-        self.cnn = build_cnn(
-                filters=filters,
-                kernel_size=kernel_size,
-                final_pool_size=final_pool_size,
-                )
+        if cnn == 'resnet':
+            self.cnn_resnet = build_resnet_cnn(
+                    n_layers=len(filters),
+                    final_pool_size=final_pool_size,
+                    )
+        else:
+            self.cnn = build_cnn(
+                    filters=filters,
+                    kernel_size=kernel_size,
+                    final_pool_size=final_pool_size,
+                    )
+
         self.net_b = nn.Linear(h_dims, self.glimpse.att_params)
         self.net_y = nn.Linear(h_dims, n_classes)
 
@@ -106,6 +104,17 @@ class UpdateModule(nn.Module):
 def update_local():
     pass
 
+class ReadoutModule(nn.Module):
+    def __init__(self, *args, **kwarg):
+        super(ReadoutModule, self).__init__()
+        self.y = nn.Linear(kwarg['h_dims'], kwarg['n_classes'])
+
+    def forward(self, nodes_state):
+        a, h = nodes_state
+        b_of_h = T.sum(a * h)
+        y = nn.ReLU(self.y(b_of_h))
+        return y
+
 class DFSGlimpseClassifier(nn.Module):
     def __init__(self, *args, **kwarg):
         #h_dims=kwarg['h_dims'],
@@ -115,15 +124,17 @@ class DFSGlimpseClassifier(nn.Module):
         nn.Module.__init__(self)
         t = nx.balanced_tree(2, 2)
         t_uni = nx.bfs_tree(t, 0)
+        self.G = mx_Graph(t)
 
         self.message_module = MessageModule()
+        self.G.register_message_module(self.message_module) # default: just copy
+
         #self.update_module = UpdateModule(h_dims, n_classes, glimpse_size)
         self.update_module = UpdateModule()
+        self.G.register_update_func(self.update_module)
 
-        self.G = mx_Graph.DiGraph(t)
-        self.G.register_update_module(self.update_module)
-        #self.G.register_message_module(self.message_module) # default: just copy
-        #self.G.register_readout_module(nn.Linear(h_dims, n_classes))
+        self.readout_module = ReadoutModule()
+        self.G.register_readout_func(self.readout_module)
 
         root = 0
         self.e_list = []
@@ -144,36 +155,6 @@ class DFSGlimpseClassifier(nn.Module):
             pred.append(y)
         return pred
 
-#model = mx_Graph(t)
-#model.register_update_func()
+if __name__ == "__main__":
 
-model = DFSGlimpseClassifier()
-
-dfs_edge_list = []
-def dfs_walk(tree, curr, l):
-    if len(tree.succ[curr]) == 0:
-        return
-    else:
-        for n in tree.succ[curr]:
-            l.append((curr, n))
-            dfs_walk(tree, n, l)
-            l.append((n, curr))
-
-dfs_walk(t_uni, 0, dfs_edge_list)
-'''
-[(0, 1),
- (1, 3),
- (3, 1),
- (1, 4),
- (4, 1),
- (1, 0),
- (0, 2),
- (2, 5),
- (5, 2),
- (2, 6),
- (6, 2),
- (2, 0)]
-'''
-for u, v in dfs_edge_list:
-    model.update_by_edge((v, u))
-
+    model = DFSGlimpseClassifier()

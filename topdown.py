@@ -120,11 +120,15 @@ class DFSGlimpseClassifier(nn.Module):
         #h_dims=kwarg['h_dims'],
         #n_classes=kwarg['n_classes'],
         #glimpse_size=kwarg['glimpse_size'],
-
         nn.Module.__init__(self)
+
+        #self.T_MAX_RECUR = kwarg['steps']
+        self.T_MAX_RECUR = 1
+
         t = nx.balanced_tree(2, 2)
         t_uni = nx.bfs_tree(t, 0)
         self.G = mx_Graph(t)
+        self.root = 0
 
         self.message_module = MessageModule()
         self.G.register_message_module(self.message_module) # default: just copy
@@ -136,22 +140,19 @@ class DFSGlimpseClassifier(nn.Module):
         self.readout_module = ReadoutModule()
         self.G.register_readout_func(self.readout_module)
 
-        root = 0
-        self.e_list = []
-        dfs_walk(t_uni, root, self.e_list)
+        self.walk_list = []
+        dfs_walk(t_uni, self.root, self.walk_list)
 
     def forward(self, x):
         self.update_module.set_image(x)
         pred = []
-        root = 0
-        T_MAX_RECUR = 1
-        y = self.classifier(self.G.get_repr(root))
+        y = 0
         pred.append(y)
-        for u, v in self.e_list:
+        for u, v in self.walk_list:
             self.G.update_by_edge((v, u))
-            for i in T_MAX_RECUR:
+            for i in self.T_MAX_RECUR:
                 self.G.update_local(u)
-            y = self.classifier(self.G.get_repr(u))
+            y = self.G.readout()
             pred.append(y)
         return pred
 

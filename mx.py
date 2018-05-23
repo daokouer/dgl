@@ -1,10 +1,6 @@
 import networkx as nx
 from networkx.classes.digraph import DiGraph
 
-import torch as th
-#import torch.nn.functional as F
-import torch.nn as nn
-from torch.autograd import Variable as Var
 
 # TODO: loss functions and training
 
@@ -61,6 +57,31 @@ class mx_Graph(DiGraph):
         nodes = self._nodes_or_all(nodes)
         for n in nodes:
             self.node[n]['u_func'] = update_func
+
+    def register_readout_func(self, readout_func):
+        self.readout_func = readout_func
+
+    def readout(self):
+        nodes_state = []
+        for n in self.nodes:
+            nodes_state.append(self.get_repr(n))
+        return self.readout_func(nodes_state)
+
+    def sendto(self, u, v):
+        f_msg = self.edges[(u, v)]['m_func']
+        m = f_msg(self.get_repr(u))
+        self.edges[(u, v)]['msg'] = m
+
+    def recvfrom(self, u, nodes):
+        m = []
+        for v in nodes:
+            m.append(self.edges[(u, v)]['msg'])
+
+        f_update = self.node[u]['u_func']
+        x = self.get_repr(u)
+        x_new = f_update(x, m)
+
+        self.set_repr(u, x_new)
 
     def update_by_edge(self, e):
         u, v = e
@@ -158,16 +179,17 @@ class mx_Graph(DiGraph):
         else:
             self.readout_func = func
 
-    def readout(self):
-        return self.readout_func()
-
     def print_all(self):
         for n in self.nodes:
             print(n, self.nodes[n])
         print()
 
 if __name__ == '__main__':
-    import matplotlib.pyplot as plt
+    import torch as th
+    import torch.nn.functional as F
+    import torch.nn as nn
+    from torch.autograd import Variable as Var
+
     th.random.manual_seed(0)
 
     ''': this makes a digraph with double edges

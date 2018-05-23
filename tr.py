@@ -24,6 +24,7 @@ class UpdateModule(nn.Module):
                  glimpse_type='gaussian',
                  glimpse_size=(15, 15),
                  ):
+        nn.Module.__init__(self)
         self.glimpse = create_glimpse(glimpse_type, glimpse_size)
         self.cnn = build_cnn(
                 filters=filters,

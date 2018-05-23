@@ -61,54 +61,47 @@ class mx_Graph(DiGraph):
     def register_readout_func(self, readout_func):
         self.readout_func = readout_func
 
-    def readout(self):
+    def readout(self, nodes='all'):
         nodes_state = []
+        nodes = self._nodes_or_all(nodes)
         for n in self.nodes:
             nodes_state.append(self.get_repr(n))
         return self.readout_func(nodes_state)
 
     def sendto(self, u, v):
+        """Compute message on edge u->v
+        Args:
+            u: source node
+            v: destination node
+        """
         f_msg = self.edges[(u, v)]['m_func']
         m = f_msg(self.get_repr(u))
         self.edges[(u, v)]['msg'] = m
 
     def recvfrom(self, u, nodes):
-        m = []
-        for v in nodes:
-            m.append(self.edges[(u, v)]['msg'])
+        """Update u by nodes
+        Args:
+            u: node to be updated
+            nodes: nodes with pre-computed messages to u
+        """
+        m = [self.edges[(u, v)]['msg'] for v in nodes]
 
         f_update = self.node[u]['u_func']
-        x = self.get_repr(u)
-        x_new = f_update(x, m)
-
+        x_new = f_update(self.get_repr(u), m)
         self.set_repr(u, x_new)
 
     def update_by_edge(self, e):
         u, v = e
-        f_msg = self.edges[(u, v)]['m_func']
-        m = f_msg(self.get_repr(u))
-        f_update = self.node[u]['u_func']
-        x = self.get_repr(u)
-        x_new = f_update(x, m)
-        x_new = self.node[u]['u_func']
-
-        self.set_repr(u, x_new)
+        self.sendto(u, v)
+        self.recvfrom(v, [u])
 
     def update_to(self, u):
         """Pull messages from 1-step away neighbors of u"""
         assert u in self.nodes
 
-        msgs = []
         for v in self.pred[u]:
-            f_msg = self.edges[(u, v)]['m_func']
-            msgs.append(f_msg(self.get_repr(v)))
-
-        f_update = self.node[u]['u_func']
-        x = self.get_repr(u)
-        x_new = f_update(x, msgs)
-        x_new = self.node[u]['u_func']
-
-        self.set_repr(u, x_new)
+            self.sendto(v, u)
+        self.recvfrom(u, self.pred[u])
 
     def update_from(self, u):
         """Update u's 1-step away neighbors"""

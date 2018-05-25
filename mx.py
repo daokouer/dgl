@@ -4,6 +4,59 @@ from networkx.classes.digraph import DiGraph
 
 # TODO: loss functions and training
 
+'''
+Defult modules: this is Pytorch specific
+    - MessageModule: copy
+    - UpdateModule: vanilla RNN
+    - ReadoutModule: bag of words
+    - ReductionModule: bag of words
+'''
+import torch as th
+import torch.nn as nn
+import torch.nn.functional as F
+
+class DefaultMessageModule(nn.Module):
+    """
+    Default message module:
+        - copy
+    """
+    def __init__(self, *args, **kwargs):
+        super(DefaultMessageModule, self).__init__(*args, **kwargs)
+
+    def forward(self, x):
+        return x
+
+class DefaultUpdateModule(nn.Module):
+    """
+    Default update module:
+        - a vanilla GRU with ReLU
+    """
+    def __init__(self, *args, **kwargs):
+        super(DefaultUpdateModule, self).__init__(*args, **kwargs)
+        h_dims = self.h_dims = kwargs.get('h_dims', 128)
+        self.fc = nn.Linear(2 * h_dims, h_dims)
+
+    def forward(self, x, m):
+        #FIXME: ugly... in case x is not initialized yet
+        if x == None:
+            x = th.zeros_like(m)
+        _in = th.cat((x, m), 1)
+        out = F.relu(self.fc(_in))
+        return out
+
+class DefaultReadoutModule(nn.Module):
+    """
+    Default readout:
+        - bag of words
+    """
+    def __init__(self, *args, **kwargs):
+        super(DefaultReadoutModule, self).__init__(*args, **kwargs)
+
+    def forward(self, x_s):
+        out = th.stack(x_s)
+        out = th.sum(out, dim=0)
+        return out
+
 class mx_Graph(DiGraph):
     '''
     Functions:
@@ -12,11 +65,11 @@ class mx_Graph(DiGraph):
     '''
     def __init__(self, *args, **kargs):
         super(mx_Graph, self).__init__(*args, **kargs)
-        self.set_msg_func()
-        self.set_gather_func()
-        self.set_reduction_func()
-        self.set_update_func()
-        self.set_readout_func()
+        self.m_func = DefaultMessageModule()
+        self.u_func = DefaultUpdateModule()
+        self.readout_func = DefaultReadoutModule()
+        # FIXME: reduction func reuse bag of words
+        self.reduction_func = DefaultReadoutModule()
         self.init_reprs()
 
     def init_reprs(self, h_init=None):
@@ -44,9 +97,11 @@ class mx_Graph(DiGraph):
         message function: accepts source state tensor and edge tag tensor, and
         returns a message tensor
         '''
-        ebunch = self._edges_or_all(edges)
-        for e in ebunch:
-            self.edges[e]['m_func'] = message_func
+        if edges == 'all':
+            self.m_func = message_func
+        else:
+            for e in self.edges:
+                self.edges[e]['m_func'] = message_func
 
     def register_update_func(self, update_func, nodes='all', batched=False):
         '''
@@ -54,9 +109,11 @@ class mx_Graph(DiGraph):
         update function: accepts a node attribute dictionary (including state and tag),
         and a list of tuples (source node, target node, edge attribute dictionary)
         '''
-        nodes = self._nodes_or_all(nodes)
-        for n in nodes:
-            self.node[n]['u_func'] = update_func
+        if nodes == 'all':
+            self.u_func = update_func
+        else:
+            for n in nodes:
+                self.node[n]['u_func'] = update_func
 
     def register_readout_func(self, readout_func):
         self.readout_func = readout_func
@@ -74,7 +131,10 @@ class mx_Graph(DiGraph):
             u: source node
             v: destination node
         """
-        f_msg = self.edges[(u, v)]['m_func']
+        try:
+            f_msg = self.edges[(u, v)]['m_func']
+        except KeyError:
+            f_msg = self.m_func
         m = f_msg(self.get_repr(u))
         self.edges[(u, v)]['msg'] = m
 
@@ -84,10 +144,17 @@ class mx_Graph(DiGraph):
             u: node to be updated
             nodes: nodes with pre-computed messages to u
         """
-        m = [self.edges[(u, v)]['msg'] for v in nodes]
+        m = [self.edges[(v, u)]['msg'] for v in nodes]
+        try:
+            f_update = self.nodes[u]['u_func']
+        except KeyError:
+            f_update = self.u_func
 
-        f_update = self.node[u]['u_func']
-        x_new = f_update(self.get_repr(u), m)
+        #FIXME: we have a problem here...
+        #FIXME: we need a reduction function to deal with variable
+        #FIXME: number of neighbors.
+        msg_gathered = self.reduction_func(m)
+        x_new = f_update(self.get_repr(u), msg_gathered)
         self.set_repr(u, x_new)
 
     def update_by_edge(self, e):
@@ -101,7 +168,7 @@ class mx_Graph(DiGraph):
 
         for v in self.pred[u]:
             self.sendto(v, u)
-        self.recvfrom(u, self.pred[u])
+        self.recvfrom(u, list(self.pred[u]))
 
     def update_from(self, u):
         """Update u's 1-step away neighbors"""
@@ -125,71 +192,23 @@ class mx_Graph(DiGraph):
     def set_gather_func(self, u=None):
         pass
 
-    def set_msg_func(self, func=None, u=None):
-        """Function that gathers messages from neighbors"""
-        def _default_msg_func(u):
-            assert u in self.nodes
-            msg_gathered = []
-            for v in self.pred[u]:
-                x = self.get_repr(v)
-                if x is not None:
-                    msg_gathered.append(x)
-            return self._reduction_func(msg_gathered)
-
-        # TODO: per node message function
-        # TODO: 'sum' should be a separate function
-        if func == None:
-            self._msg_func = _default_msg_func
-        else:
-            self._msg_func = func
-
-    def set_update_func(self, func=None, u=None):
-        """
-        Update function upon receiving an aggregate
-        message from a node's neighbor
-        """
-        def _default_update_func(x, m):
-            return x + m
-
-        # TODO: per node update function
-        if func == None:
-            self._update_func = _default_update_func
-        else:
-            self._update_func = func
-
-    def set_readout_func(self, func=None):
-        """Readout function of the whole graph"""
-        def _default_readout_func():
-            valid_hs = []
-            for x in self.nodes:
-                h = self.get_repr(x)
-                if h is not None:
-                    valid_hs.append(h)
-            return self._reduction_func(valid_hs)
-#
-        if func == None:
-            self.readout_func = _default_readout_func
-        else:
-            self.readout_func = func
-
     def print_all(self):
         for n in self.nodes:
             print(n, self.nodes[n])
         print()
 
 if __name__ == '__main__':
-    import torch as th
-    import torch.nn.functional as F
-    import torch.nn as nn
     from torch.autograd import Variable as Var
 
     th.random.manual_seed(0)
 
-    ''': this makes a digraph with double edges
-    tg = nx.path_graph(10)
-    g = mx_Graph(tg)
-    g.print_all()
+    g_path = mx_Graph(nx.path_graph(2))
+    g_path.set_repr(0, th.rand(2, 128))
+    g_path.sendto(0, 1)
+    g_path.recvfrom(1, [0])
+    g_path.readout()
 
+    '''
     # this makes a uni-edge tree
     tr = nx.bfs_tree(nx.balanced_tree(2, 3), 0)
     m_tr = mx_Graph(tr)
@@ -201,27 +220,10 @@ if __name__ == '__main__':
     fwd_net = nn.Sequential(nn.Linear(4, 4), nn.ReLU())
     g.register_message_func(fwd_net)
 
-    '''
-    g.set_update_func(nn.GRUCell(4, 4))
     for n in g:
-        g.set_repr(n, Var(th.rand(2, 4)))
+        g.set_repr(n, th.rand(2, 4))
 
-    print("\t**before:"); g.print_all()
+    y_pre = g.readout()
     g.update_from(0)
-    g.update_from(1)
-    print("\t**after:"); g.print_all()
+    y_after = g.readout()
 
-    print("\ntesting fwd update")
-    g.clear()
-    g.add_path([0, 1, 2])
-    g.init_reprs()
-
-    fwd_net = nn.Sequential(nn.Linear(4, 4), nn.ReLU())
-    g.set_update_func(fwd_net)
-
-    g.set_repr(0, Var(th.rand(2, 4)))
-    print("\t**before:"); g.print_all()
-    g.update_from(0)
-    g.update_from(1)
-    print("\t**after:"); g.print_all()
-    '''

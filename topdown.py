@@ -103,17 +103,25 @@ class UpdateModule(nn.Module):
         self.net_y = nn.Linear(h_dims, n_classes)
         self.net_a = nn.Linear(h_dims, 1)
 
+        self.max_recur = config.get('max_recur', 1)
+
     def set_image(self, x):
         self.x = x
 
     def forward(self, node_state, message):
         h, b, a, y = node_state
-        b_new = b + self.net_b(h)
-        y_new = y + self.net_y(h)
-        a_new = self.net_a(h)
+        message_avg = 0 if len(message) == 0 else T.stack(message).mean(0)
+        h_new = h + message_avg
 
-        g = self.glimpse(self.x, b_new)
-        h_new = h + self.cnn(g) + message
+        # FIXME: certainly wrong for model itself, just a demonstration for
+        # how to incorporate T_MAX_RECUR
+        for i in self.max_recur:
+            b_new = b + self.net_b(h_new)
+            y_new = y + self.net_y(h_new)
+            a_new = self.net_a(h_new)
+
+            g = self.glimpse(self.x, b_new)
+            h_new = h + self.cnn(g)
 
         return h_new, b_new, a_new, y_new
 
@@ -131,11 +139,10 @@ class ReadoutModule(nn.Module):
         y = nn.ReLU(self.y(b_of_h))
         return y
 
-class DFSGlimpseClassifier(nn.Module):
+class DFSGlimpseSingleObjectClassifier(nn.Module):
     def __init__(self,
                  h_dims=128,
                  n_classes=10,
-                 steps=5,
                  filters=[16, 32, 64, 128, 256],
                  kernel_size=(3, 3),
                  final_pool_size=(2, 2),
@@ -146,7 +153,6 @@ class DFSGlimpseClassifier(nn.Module):
         nn.Module.__init__(self)
 
         #self.T_MAX_RECUR = kwarg['steps']
-        self.T_MAX_RECUR = 1
 
         t = nx.balanced_tree(2, 2)
         t_uni = nx.bfs_tree(t, 0)
@@ -164,7 +170,8 @@ class DFSGlimpseClassifier(nn.Module):
             h_dims=h_dims,
             n_classes=n_classes,
             final_pool_size=final_pool_size,
-            cnn=cnn
+            cnn=cnn,
+            max_recur=1,    # T_MAX_RECUR
         )
         self.G.register_update_func(self.update_module)
 
@@ -177,20 +184,17 @@ class DFSGlimpseClassifier(nn.Module):
     def forward(self, x):
         self.update_module.set_image(x)
 
-        pred = []
         #TODO: the following two lines is needed for single object
         #TODO: but not useful or wrong for multi-obj
         self.G.recvfrom(self.root, [])
-        pred.append(self.G.readout(self.root))
 
         for u, v in self.walk_list:
             self.G.update_by_edge((v, u))
-            for i in self.T_MAX_RECUR:
-                self.G.update_local(u)
-            y = self.G.readout()
-            pred.append(y)
-        return pred
+            # update local should be inside the update module
+            #for i in self.T_MAX_RECUR:
+            #    self.G.update_local(u)
+        return self.G.readout([self.root])
 
 if __name__ == "__main__":
 
-    model = DFSGlimpseClassifier()
+    model = DFSGlimpseSingleObjectClassifier()

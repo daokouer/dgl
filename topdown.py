@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.functional as F
 import torchvision.models as MODELS
 import torch.nn.init as INIT
+from util import cuda
 
 def dfs_walk(tree, curr, l):
     if len(tree.succ[curr]) == 0:
@@ -208,7 +209,7 @@ if __name__ == "__main__":
     mnist_train_dl = DataLoader(mnist_train, batch_size=32, shuffle=True, drop_last=True, num_workers=0)
     mnist_valid_dl = DataLoader(mnist_valid, batch_size=32, shuffle=False, drop_last=True, num_workers=0)
 
-    model = DFSGlimpseSingleObjectClassifier()
+    model = cuda(DFSGlimpseSingleObjectClassifier())
 
     x, y, B = next(mnist_train_dl)
-    print(model.forward(x))
+    print(model.forward(cuda(x)))

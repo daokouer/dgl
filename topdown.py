@@ -129,6 +129,9 @@ def update_local():
     pass
 
 class ReadoutModule(nn.Module):
+    '''
+    Returns the logits of classes
+    '''
     def __init__(self, *args, **kwarg):
         super(ReadoutModule, self).__init__()
         self.y = nn.Linear(kwarg['h_dims'], kwarg['n_classes'])
@@ -136,7 +139,7 @@ class ReadoutModule(nn.Module):
     def forward(self, nodes_state):
         h, _, a, _ = nodes_state
         b_of_h = T.sum(a * h)
-        y = nn.ReLU(self.y(b_of_h))
+        y = self.y(b_of_h)
         return y
 
 class DFSGlimpseSingleObjectClassifier(nn.Module):
@@ -196,5 +199,16 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
         return self.G.readout([self.root])
 
 if __name__ == "__main__":
+    from datasets import MNISTMulti
+    from torch.utils.data import DataLoader
+
+    mnist_train = MNISTMulti('.', n_digits=1, backrand=0, image_rows=50, image_cols=50, download=True)
+    mnist_valid = MNISTMulti('.', n_digits=1, backrand=0, image_rows=50, image_cols=50, download=False, mode='valid')
+
+    mnist_train_dl = DataLoader(mnist_train, batch_size=32, shuffle=True, drop_last=True, num_workers=0)
+    mnist_valid_dl = DataLoader(mnist_valid, batch_size=32, shuffle=False, drop_last=True, num_workers=0)
 
     model = DFSGlimpseSingleObjectClassifier()
+
+    x, y, B = next(mnist_train_dl)
+    print(model.forward(x))

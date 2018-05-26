@@ -206,10 +206,10 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
 
         self.update_module.set_image(x)
         self.G.init_reprs((
-            T.zeros(batch_size, self.h_dims),
-            T.zeros(batch_size, self.update_module.glimpse.att_params),
-            T.zeros(batch_size, 1),
-            T.zeros(batch_size, self.n_classes),
+            cuda(T.zeros(batch_size, self.h_dims)),
+            cuda(T.zeros(batch_size, self.update_module.glimpse.att_params)),
+            cuda(T.zeros(batch_size, 1)),
+            cuda(T.zeros(batch_size, self.n_classes)),
             ))
 
         #TODO: the following two lines is needed for single object

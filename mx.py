@@ -2,8 +2,6 @@ import networkx as nx
 from networkx.classes.digraph import DiGraph
 
 
-# TODO: loss functions and training
-
 '''
 Defult modules: this is Pytorch specific
     - MessageModule: copy
@@ -29,19 +27,41 @@ class DefaultMessageModule(nn.Module):
 class DefaultUpdateModule(nn.Module):
     """
     Default update module:
-        - a vanilla GRU with ReLU
+        - a vanilla GRU with ReLU, or GRU
     """
     def __init__(self, *args, **kwargs):
-        super(DefaultUpdateModule, self).__init__(*args, **kwargs)
+        super(DefaultUpdateModule, self).__init__()
         h_dims = self.h_dims = kwargs.get('h_dims', 128)
-        self.fc = nn.Linear(2 * h_dims, h_dims)
+        net_type = self.net_type = kwargs.get('net', 'fwd')
+        self.reduce_func = DefaultReductionModule()
+        if net_type == 'gru':
+            self.net = nn.GRUCell(h_dims, h_dims)
+        else:
+            self.net = nn.Linear(2 * h_dims, h_dims)
 
-    def forward(self, x, m):
+    def forward(self, x, msgs):
         #FIXME: ugly... in case x is not initialized yet
-        if x == None:
-            x = th.zeros_like(m)
-        _in = th.cat((x, m), 1)
-        out = F.relu(self.fc(_in))
+        if type(x) != th.Tensor:
+            x = th.zeros_like(msgs[0])
+        m = self.reduce_func(msgs)
+        if self.net_type == 'gru':
+            out = self.net(x, m)
+        else:
+            _in = th.cat((x, m), 1)
+            out = F.relu(self.net(_in))
+        return out
+
+class DefaultReductionModule(nn.Module):
+    """
+    Default readout:
+        - bag of words
+    """
+    def __init__(self, *args, **kwargs):
+        super(DefaultReductionModule, self).__init__(*args, **kwargs)
+
+    def forward(self, x_s):
+        out = th.stack(x_s)
+        out = th.sum(out, dim=0)
         return out
 
 class DefaultReadoutModule(nn.Module):
@@ -51,11 +71,10 @@ class DefaultReadoutModule(nn.Module):
     """
     def __init__(self, *args, **kwargs):
         super(DefaultReadoutModule, self).__init__(*args, **kwargs)
+        self.reduce_func = DefaultReductionModule()
 
     def forward(self, x_s):
-        out = th.stack(x_s)
-        out = th.sum(out, dim=0)
-        return out
+        return self.reduce_func(x_s)
 
 class mx_Graph(DiGraph):
     '''
@@ -68,8 +87,6 @@ class mx_Graph(DiGraph):
         self.m_func = DefaultMessageModule()
         self.u_func = DefaultUpdateModule()
         self.readout_func = DefaultReadoutModule()
-        # FIXME: reduction func reuse bag of words
-        self.reduction_func = DefaultReadoutModule()
         self.init_reprs()
 
     def init_reprs(self, h_init=None):
@@ -121,7 +138,7 @@ class mx_Graph(DiGraph):
     def readout(self, nodes='all'):
         nodes_state = []
         nodes = self._nodes_or_all(nodes)
-        for n in self.nodes:
+        for n in nodes:
             nodes_state.append(self.get_repr(n))
         return self.readout_func(nodes_state)
 
@@ -150,11 +167,7 @@ class mx_Graph(DiGraph):
         except KeyError:
             f_update = self.u_func
 
-        #FIXME: we have a problem here...
-        #FIXME: we need a reduction function to deal with variable
-        #FIXME: number of neighbors.
-        msg_gathered = self.reduction_func(m)
-        x_new = f_update(self.get_repr(u), msg_gathered)
+        x_new = f_update(self.get_repr(u), m)
         self.set_repr(u, x_new)
 
     def update_by_edge(self, e):
@@ -202,6 +215,7 @@ if __name__ == '__main__':
 
     th.random.manual_seed(0)
 
+    print("testing vanilla RNN update")
     g_path = mx_Graph(nx.path_graph(2))
     g_path.set_repr(0, th.rand(2, 128))
     g_path.sendto(0, 1)
@@ -216,9 +230,10 @@ if __name__ == '__main__':
     '''
     print("testing GRU update")
     g = mx_Graph(nx.path_graph(3))
-    g.register_update_func(nn.GRUCell(4, 4))
-    fwd_net = nn.Sequential(nn.Linear(4, 4), nn.ReLU())
-    g.register_message_func(fwd_net)
+    update_net = DefaultUpdateModule(h_dims=4, net_type='gru')
+    g.register_update_func(update_net)
+    msg_net = nn.Sequential(nn.Linear(4, 4), nn.ReLU())
+    g.register_message_func(msg_net)
 
     for n in g:
         g.set_repr(n, th.rand(2, 4))

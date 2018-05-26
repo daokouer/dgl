@@ -7,6 +7,9 @@ import torch.functional as F
 import torchvision.models as MODELS
 import torch.nn.init as INIT
 from util import cuda
+import numpy as np
+
+batch_size = 32
 
 def dfs_walk(tree, curr, l):
     if len(tree.succ[curr]) == 0:
@@ -52,7 +55,7 @@ def build_resnet_cnn(**config):
 
 class MessageModule(nn.Module):
     def forward(self, state):
-        h, b, y = state
+        h, b, a, y = state
         return h
 
 class UpdateModule(nn.Module):
@@ -81,14 +84,27 @@ class UpdateModule(nn.Module):
         glimpse_size = config['glimpse_size']
         self.glimpse = create_glimpse(glimpse_type, glimpse_size)
 
+        h_dims = config['h_dims']
+        n_classes = config['n_classes']
+        self.net_i = nn.Sequential(
+                nn.Linear(h_dims, h_dims),
+                nn.ReLU(),
+                nn.Linear(h_dims, h_dims),
+                nn.ReLU(),
+                )
+        self.net_b = nn.Linear(h_dims, self.glimpse.att_params)
+        self.net_y = nn.Linear(h_dims, n_classes)
+        self.net_a = nn.Linear(h_dims, 1)
+
         cnn = config['cnn']
         final_pool_size = config['final_pool_size']
         if cnn == 'resnet':
             n_layers = config['n_layers']
-            self.cnn_resnet = build_resnet_cnn(
+            self.cnn = build_resnet_cnn(
                     n_layers=n_layers,
                     final_pool_size=final_pool_size,
                     )
+            self.net_h = nn.Linear(128 * np.prod(final_pool_size), h_dims)
         else:
             filters = config['filters']
             kernel_size = config['kernel_size']
@@ -97,12 +113,7 @@ class UpdateModule(nn.Module):
                     kernel_size=kernel_size,
                     final_pool_size=final_pool_size,
                     )
-
-        h_dims = config['h_dims']
-        n_classes = config['n_classes']
-        self.net_b = nn.Linear(h_dims, self.glimpse.att_params)
-        self.net_y = nn.Linear(h_dims, n_classes)
-        self.net_a = nn.Linear(h_dims, 1)
+            self.net_h = nn.Linear(filters[-1] * np.prod(final_pool_size), h_dims)
 
         self.max_recur = config.get('max_recur', 1)
 
@@ -111,18 +122,20 @@ class UpdateModule(nn.Module):
 
     def forward(self, node_state, message):
         h, b, a, y = node_state
+        batch_size = h.shape[0]
         message_avg = 0 if len(message) == 0 else T.stack(message).mean(0)
         h_new = h + message_avg
 
         # FIXME: certainly wrong for model itself, just a demonstration for
         # how to incorporate T_MAX_RECUR
-        for i in self.max_recur:
-            b_new = b + self.net_b(h_new)
-            y_new = y + self.net_y(h_new)
-            a_new = self.net_a(h_new)
+        for i in range(self.max_recur):
+            i_new = self.net_i(h_new)
+            b_new = b + self.net_b(i_new)
+            y_new = y + self.net_y(i_new)
+            a_new = self.net_a(i_new)
 
-            g = self.glimpse(self.x, b_new)
-            h_new = h + self.cnn(g)
+            g = self.glimpse(self.x, b_new[:, None])[:, 0]
+            h_new = h + self.net_h(self.cnn(g).view(batch_size, -1))
 
         return h_new, b_new, a_new, y_new
 
@@ -138,8 +151,9 @@ class ReadoutModule(nn.Module):
         self.y = nn.Linear(kwarg['h_dims'], kwarg['n_classes'])
 
     def forward(self, nodes_state):
-        h, _, a, _ = nodes_state
-        b_of_h = T.sum(a * h)
+        h = T.stack([s[0] for s in nodes_state], 1)
+        a = T.stack([s[2] for s in nodes_state], 1)
+        b_of_h = T.sum(a * h, 1)
         y = self.y(b_of_h)
         return y
 
@@ -162,6 +176,8 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
         t_uni = nx.bfs_tree(t, 0)
         self.G = mx_Graph(t)
         self.root = 0
+        self.h_dims = h_dims
+        self.n_classes = n_classes
 
         self.message_module = MessageModule()
         self.G.register_message_func(self.message_module) # default: just copy
@@ -186,7 +202,15 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
         dfs_walk(t_uni, self.root, self.walk_list)
 
     def forward(self, x):
+        batch_size = x.shape[0]
+
         self.update_module.set_image(x)
+        self.G.init_reprs((
+            T.zeros(batch_size, self.h_dims),
+            T.zeros(batch_size, self.update_module.glimpse.att_params),
+            T.zeros(batch_size, 1),
+            T.zeros(batch_size, self.n_classes),
+            ))
 
         #TODO: the following two lines is needed for single object
         #TODO: but not useful or wrong for multi-obj
@@ -206,10 +230,11 @@ if __name__ == "__main__":
     mnist_train = MNISTMulti('.', n_digits=1, backrand=0, image_rows=50, image_cols=50, download=True)
     mnist_valid = MNISTMulti('.', n_digits=1, backrand=0, image_rows=50, image_cols=50, download=False, mode='valid')
 
-    mnist_train_dl = DataLoader(mnist_train, batch_size=32, shuffle=True, drop_last=True, num_workers=0)
-    mnist_valid_dl = DataLoader(mnist_valid, batch_size=32, shuffle=False, drop_last=True, num_workers=0)
+    mnist_train_dl = DataLoader(mnist_train, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=0)
+    mnist_valid_dl = DataLoader(mnist_valid, batch_size=batch_size, shuffle=False, drop_last=True, num_workers=0)
 
     model = cuda(DFSGlimpseSingleObjectClassifier())
 
-    x, y, B = next(mnist_train_dl)
+    x, y, B = next(iter(mnist_train_dl))
+    x = x[:, None].expand(x.shape[0], 3, x.shape[1], x.shape[2]).float() / 255.
     print(model.forward(cuda(x)))

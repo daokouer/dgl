@@ -64,7 +64,7 @@ class mx_Graph(DiGraph):
     def readout(self, nodes='all'):
         nodes_state = []
         nodes = self._nodes_or_all(nodes)
-        for n in self.nodes:
+        for n in nodes:
             nodes_state.append(self.get_repr(n))
         return self.readout_func(nodes_state)
 
@@ -84,7 +84,7 @@ class mx_Graph(DiGraph):
             u: node to be updated
             nodes: nodes with pre-computed messages to u
         """
-        m = [self.edges[(u, v)]['msg'] for v in nodes]
+        m = [self.edges[(v, u)]['msg'] for v in nodes]
 
         f_update = self.node[u]['u_func']
         x_new = f_update(self.get_repr(u), m)

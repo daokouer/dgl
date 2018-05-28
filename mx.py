@@ -40,14 +40,13 @@ class DefaultUpdateModule(nn.Module):
             self.net = nn.Linear(2 * h_dims, h_dims)
 
     def forward(self, x, msgs):
-        #FIXME: ugly... in case x is not initialized yet
-        if type(x) != th.Tensor:
+        if not th.is_tensor(x):
             x = th.zeros_like(msgs[0])
         m = self.reduce_func(msgs)
         if self.net_type == 'gru':
-            out = self.net(x, m)
+            out = self.net(m, x)
         else:
-            _in = th.cat((x, m), 1)
+            _in = th.cat((m, x), 1)
             out = F.relu(self.net(_in))
         return out
 
@@ -148,10 +147,8 @@ class mx_Graph(DiGraph):
             u: source node
             v: destination node
         """
-        try:
-            f_msg = self.edges[(u, v)]['m_func']
-        except KeyError:
-            f_msg = self.m_func
+        #TODO: work on list of u and v
+        f_msg = self.edges[(u, v)].get('m_func', self.m_func)
         m = f_msg(self.get_repr(u))
         self.edges[(u, v)]['msg'] = m
 
@@ -162,11 +159,7 @@ class mx_Graph(DiGraph):
             nodes: nodes with pre-computed messages to u
         """
         m = [self.edges[(v, u)]['msg'] for v in nodes]
-        try:
-            f_update = self.nodes[u]['u_func']
-        except KeyError:
-            f_update = self.u_func
-
+        f_update = self.nodes[u].get('u_func', self.u_func)
         x_new = f_update(self.get_repr(u), m)
         self.set_repr(u, x_new)
 

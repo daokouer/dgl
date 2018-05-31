@@ -48,7 +48,7 @@ def build_resnet_cnn(**config):
     n_layers = config['n_layers']
     final_pool_size = config['final_pool_size']
 
-    resnet = MODELS.resnet18(pretrained=True)
+    resnet = MODELS.resnet18(pretrained=False)
     cnn_list = list(resnet.children())[0:n_layers]
     cnn_list.append(nn.AdaptiveMaxPool2d(final_pool_size))
 

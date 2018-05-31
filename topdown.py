@@ -3,10 +3,10 @@ from mx import mx_Graph
 from glimpse import create_glimpse
 import torch as T
 import torch.nn as nn
-import torch.functional as F
+import torch.nn.functional as F
 import torchvision.models as MODELS
 import torch.nn.init as INIT
-from util import USE_CUDA
+from util import USE_CUDA, cuda
 import numpy as np
 import skorch
 
@@ -119,6 +119,7 @@ class UpdateModule(nn.Module):
             self.net_h = nn.Linear(filters[-1] * np.prod(final_pool_size), h_dims)
 
         self.max_recur = config.get('max_recur', 1)
+        self.h_dims = h_dims
 
     def set_image(self, x):
         self.x = x
@@ -126,7 +127,7 @@ class UpdateModule(nn.Module):
     def forward(self, node_state, message):
         h, b, a, y = node_state
         batch_size = h.shape[0]
-        message_avg = 0 if len(message) == 0 else T.stack(message).mean(0)
+        message_avg = h.new(batch_size, self.h_dims).zero_() if len(message) == 0 else T.stack(message).mean(0)
         h_new = h
         b_new = b
 
@@ -232,9 +233,6 @@ class Net(skorch.NeuralNet):
         # Overriding this method to skip initializing criterion as we don't use it.
         pass
 
-    def initialize_optimizer(self):
-        self.opt = self.opt_class(self.module_.parameters(), self.lr)
-
     def get_split_datasets(self, X, y=None, **fit_params):
         # Overriding this method to use our own dataloader to change the X
         # in signature to (train_dataset, valid_dataset)
@@ -247,7 +245,7 @@ class Net(skorch.NeuralNet):
         step = skorch.NeuralNet.train_step(self, Xi, yi, **fit_params)
         loss = step['loss']
         y_pred = step['y_pred']
-        valid_loss = self.get_loss(y_pred, y_true, training=False)
+        valid_loss = self.get_loss(y_pred, yi, training=False)
         return {
                 'loss': loss,
                 'y_pred': y_pred,
@@ -287,11 +285,12 @@ class Dump(skorch.callbacks.Callback):
         print('@', self.epoch, self.correct, '/', self.total)
 
 
-def data_generator(dataloader, batch_size):
+def data_generator(dataset, batch_size, shuffle):
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=True, num_workers=0)
     for _x, _y, _B in dataloader:
         x = _x[:, None].expand(_x.shape[0], 3, _x.shape[1], _x.shape[2]).float() / 255.
         y = _y.squeeze(1)
-        yield x, y
+        yield cuda(x), cuda(y)
 
 
 if __name__ == "__main__":
@@ -301,11 +300,9 @@ if __name__ == "__main__":
     mnist_train = MNISTMulti('.', n_digits=1, backrand=0, image_rows=50, image_cols=50, download=True)
     mnist_valid = MNISTMulti('.', n_digits=1, backrand=0, image_rows=50, image_cols=50, download=False, mode='valid')
 
-    mnist_train_dl = DataLoader(mnist_train, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=0)
-    mnist_valid_dl = DataLoader(mnist_valid, batch_size=batch_size, shuffle=False, drop_last=True, num_workers=0)
-
     net = Net(
-            module=model,
+            module=DFSGlimpseSingleObjectClassifier,
+            criterion=None,
             max_epochs=50,
             optimizer=T.optim.RMSprop,
             lr=1e-4,
@@ -317,9 +314,9 @@ if __name__ == "__main__":
                 Dump(),
                 ],
             iterator_train=data_generator,
-            iterator_train__dataloader=mnist_train_dl,
+            iterator_train__shuffle=True,
             iterator_valid=data_generator,
-            iterator_valid__dataloader=mnist_valid_dl,
+            iterator_valid__shuffle=False,
             )
 
-    net.fit()
+    net.fit((mnist_train, mnist_valid))

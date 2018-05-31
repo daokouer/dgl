@@ -134,12 +134,12 @@ class mx_Graph(DiGraph):
     def register_readout_func(self, readout_func):
         self.readout_func = readout_func
 
-    def readout(self, nodes='all'):
+    def readout(self, nodes='all', **kwargs):
         nodes_state = []
         nodes = self._nodes_or_all(nodes)
         for n in nodes:
             nodes_state.append(self.get_repr(n))
-        return self.readout_func(nodes_state)
+        return self.readout_func(nodes_state, **kwargs)
 
     def sendto(self, u, v):
         """Compute message on edge u->v

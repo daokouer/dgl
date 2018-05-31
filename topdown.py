@@ -155,11 +155,16 @@ class ReadoutModule(nn.Module):
         super(ReadoutModule, self).__init__()
         self.y = nn.Linear(kwarg['h_dims'], kwarg['n_classes'])
 
-    def forward(self, nodes_state):
-        h = T.stack([s[0] for s in nodes_state], 1)
-        a = T.stack([s[2] for s in nodes_state], 1)
-        b_of_h = T.sum(a * h, 1)
-        y = self.y(b_of_h)
+    def forward(self, nodes_state, pretrain=False):
+        if pretrain:
+            assert len(nodes_state) == 1        # root only
+            h = nodes_state[0][0]
+            y = self.y(h)
+        else:
+            h = T.stack([s[0] for s in nodes_state], 1)
+            a = F.softmax(T.stack([s[2] for s in nodes_state], 1), 1)
+            b_of_h = T.sum(a * h, 1)
+            y = self.y(b_of_h)
         return y
 
 class DFSGlimpseSingleObjectClassifier(nn.Module):
@@ -206,13 +211,13 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
         self.walk_list = []
         dfs_walk(t_uni, self.root, self.walk_list)
 
-    def forward(self, x):
+    def forward(self, x, pretrain=False):
         batch_size = x.shape[0]
 
         self.update_module.set_image(x)
         self.G.init_reprs((
             x.new(batch_size, self.h_dims).zero_(),
-            x.new(batch_size, self.update_module.glimpse.att_params).zero_(),
+            self.update_module.glimpse.full()[None].expand(batch_size, self.update_module.glimpse.att_params),
             x.new(batch_size, 1).zero_(),
             x.new(batch_size, self.n_classes).zero_(),
             ))
@@ -221,12 +226,15 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
         #TODO: but not useful or wrong for multi-obj
         self.G.recvfrom(self.root, [])
 
-        for u, v in self.walk_list:
-            self.G.update_by_edge((v, u))
-            # update local should be inside the update module
-            #for i in self.T_MAX_RECUR:
-            #    self.G.update_local(u)
-        return self.G.readout()
+        if pretrain:
+            return self.G.readout([self.root], pretrain=True)
+        else:
+            for u, v in self.walk_list:
+                self.G.update_by_edge((v, u))
+                # update local should be inside the update module
+                #for i in self.T_MAX_RECUR:
+                #    self.G.update_local(u)
+            return self.G.readout('all', pretrain=False)
 
 
 class Net(skorch.NeuralNet):
@@ -322,4 +330,5 @@ if __name__ == "__main__":
             iterator_valid__shuffle=False,
             )
 
-    net.fit((mnist_train, mnist_valid))
+    net.fit((mnist_train, mnist_valid), pretrain=True, epochs=1)
+    net.partial_fit((mnist_train, mnist_valid), pretrain=False)

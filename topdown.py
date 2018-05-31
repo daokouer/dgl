@@ -6,8 +6,9 @@ import torch.nn as nn
 import torch.functional as F
 import torchvision.models as MODELS
 import torch.nn.init as INIT
-from util import cuda
+from util import USE_CUDA
 import numpy as np
+import skorch
 
 batch_size = 32
 
@@ -96,6 +97,8 @@ class UpdateModule(nn.Module):
         self.net_y = nn.Linear(h_dims, n_classes)
         self.net_a = nn.Linear(h_dims, 1)
 
+        self.h_to_h = nn.GRUCell(h_dims * 2, h_dims)
+
         cnn = config['cnn']
         final_pool_size = config['final_pool_size']
         if cnn == 'resnet':
@@ -124,18 +127,18 @@ class UpdateModule(nn.Module):
         h, b, a, y = node_state
         batch_size = h.shape[0]
         message_avg = 0 if len(message) == 0 else T.stack(message).mean(0)
-        h_new = h + message_avg
+        h_new = h
+        b_new = b
 
-        # FIXME: certainly wrong for model itself, just a demonstration for
-        # how to incorporate T_MAX_RECUR
         for i in range(self.max_recur):
+            g = self.glimpse(self.x, b_new[:, None])[:, 0]
+            h_in = T.cat([self.net_h(self.cnn(g).view(batch_size, -1)), message_avg], -1)
+            h_new = self.h_to_h(h_in, h_new)
+
             i_new = self.net_i(h_new)
             b_new = b + self.net_b(i_new)
             y_new = y + self.net_y(i_new)
             a_new = self.net_a(i_new)
-
-            g = self.glimpse(self.x, b_new[:, None])[:, 0]
-            h_new = h + self.net_h(self.cnn(g).view(batch_size, -1))
 
         return h_new, b_new, a_new, y_new
 
@@ -206,10 +209,10 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
 
         self.update_module.set_image(x)
         self.G.init_reprs((
-            cuda(T.zeros(batch_size, self.h_dims)),
-            cuda(T.zeros(batch_size, self.update_module.glimpse.att_params)),
-            cuda(T.zeros(batch_size, 1)),
-            cuda(T.zeros(batch_size, self.n_classes)),
+            x.new(batch_size, self.h_dims).zero_(),
+            x.new(batch_size, self.update_module.glimpse.att_params).zero_(),
+            x.new(batch_size, 1).zero_(),
+            x.new(batch_size, self.n_classes).zero_(),
             ))
 
         #TODO: the following two lines is needed for single object
@@ -221,7 +224,75 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
             # update local should be inside the update module
             #for i in self.T_MAX_RECUR:
             #    self.G.update_local(u)
-        return self.G.readout([self.root])
+        return self.G.readout()
+
+
+class Net(skorch.NeuralNet):
+    def initialize_criterion(self):
+        # Overriding this method to skip initializing criterion as we don't use it.
+        pass
+
+    def initialize_optimizer(self):
+        self.opt = self.opt_class(self.module_.parameters(), self.lr)
+
+    def get_split_datasets(self, X, y=None, **fit_params):
+        # Overriding this method to use our own dataloader to change the X
+        # in signature to (train_dataset, valid_dataset)
+        X_train, X_valid = X
+        train = self.get_dataset(X_train, None)
+        valid = self.get_dataset(X_valid, None)
+        return train, valid
+
+    def train_step(self, Xi, yi, **fit_params):
+        step = skorch.NeuralNet.train_step(self, Xi, yi, **fit_params)
+        loss = step['loss']
+        y_pred = step['y_pred']
+        valid_loss = self.get_loss(y_pred, y_true, training=False)
+        return {
+                'loss': loss,
+                'y_pred': y_pred,
+                'valid_loss': valid_loss,
+                }
+
+    def get_loss(self, y_pred, y_true, X=None, training=False):
+        if training:
+            return F.cross_entropy(y_pred, y_true)
+        else:
+            return (y_pred.max(1)[1] == y_true).sum()
+
+
+class Dump(skorch.callbacks.Callback):
+    def initialize(self):
+        self.epoch = 0
+        self.batch = 0
+        self.correct = 0
+        self.total = 0
+        return self
+
+    def on_epoch_begin(self, net, **kwargs):
+        self.epoch += 1
+        self.batch = 0
+        self.correct = 0
+        self.total = 0
+
+    def on_batch_end(self, net, **kwargs):
+        self.batch += 1
+        if kwargs['training']:
+            print('#', self.epoch, self.batch, kwargs['loss'], kwargs['valid_loss'])
+        else:
+            self.correct += kwargs['valid_loss']
+            self.total += kwargs['X'].shape[0]
+
+    def on_epoch_end(self, net, **kwargs):
+        print('@', self.epoch, self.correct, '/', self.total)
+
+
+def data_generator(dataloader, batch_size):
+    for _x, _y, _B in dataloader:
+        x = _x[:, None].expand(_x.shape[0], 3, _x.shape[1], _x.shape[2]).float() / 255.
+        y = _y.squeeze(1)
+        yield x, y
+
 
 if __name__ == "__main__":
     from datasets import MNISTMulti
@@ -233,8 +304,22 @@ if __name__ == "__main__":
     mnist_train_dl = DataLoader(mnist_train, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=0)
     mnist_valid_dl = DataLoader(mnist_valid, batch_size=batch_size, shuffle=False, drop_last=True, num_workers=0)
 
-    model = cuda(DFSGlimpseSingleObjectClassifier())
+    net = Net(
+            module=model,
+            max_epochs=50,
+            optimizer=T.optim.RMSprop,
+            lr=1e-4,
+            batch_size=batch_size,
+            device='cuda' if USE_CUDA else 'cpu',
+            callbacks=[
+                skorch.callbacks.Checkpoint(),
+                skorch.callbacks.GradientNormClipping(1),
+                Dump(),
+                ],
+            iterator_train=data_generator,
+            iterator_train__dataloader=mnist_train_dl,
+            iterator_valid=data_generator,
+            iterator_valid__dataloader=mnist_valid_dl,
+            )
 
-    x, y, B = next(iter(mnist_train_dl))
-    x = x[:, None].expand(x.shape[0], 3, x.shape[1], x.shape[2]).float() / 255.
-    print(model.forward(cuda(x)))
+    net.fit()

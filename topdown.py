@@ -98,6 +98,7 @@ class UpdateModule(nn.Module):
         self.net_a = nn.Linear(h_dims, 1)
 
         self.h_to_h = nn.GRUCell(h_dims * 2, h_dims)
+        INIT.orthogonal_(self.h_to_h.weight_hh)
 
         cnn = config['cnn']
         final_pool_size = config['final_pool_size']
@@ -278,7 +279,7 @@ class Dump(skorch.callbacks.Callback):
         if kwargs['training']:
             print('#', self.epoch, self.batch, kwargs['loss'], kwargs['valid_loss'])
         else:
-            self.correct += kwargs['valid_loss']
+            self.correct += kwargs['loss']
             self.total += kwargs['X'].shape[0]
 
     def on_epoch_end(self, net, **kwargs):
@@ -305,12 +306,14 @@ if __name__ == "__main__":
             criterion=None,
             max_epochs=50,
             optimizer=T.optim.RMSprop,
-            lr=1e-4,
+            #optimizer__weight_decay=1e-4,
+            lr=1e-3,
             batch_size=batch_size,
             device='cuda' if USE_CUDA else 'cpu',
             callbacks=[
                 skorch.callbacks.Checkpoint(),
                 skorch.callbacks.GradientNormClipping(1),
+                skorch.callbacks.LRScheduler('ReduceLROnPlateau'),
                 Dump(),
                 ],
             iterator_train=data_generator,

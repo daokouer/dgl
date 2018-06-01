@@ -12,11 +12,9 @@ def cuda(x, device=None, async_=False):
 def tovar(x, *args, dtype='float32', **kwargs):
     if not T.is_tensor(x):
         x = T.from_numpy(NP.array(x, dtype=dtype))
-    return T.autograd.Variable(cuda(x), *args, **kwargs)
+    return cuda(x)
 
 def tonumpy(x):
-    if isinstance(x, T.autograd.Variable):
-        x = x.data
     if T.is_tensor(x):
         x = x.cpu().numpy()
     return x
@@ -28,8 +26,6 @@ def create_onehot(idx, size):
 
 def reverse(x, dim):
     idx = T.arange(x.size()[dim] - 1, -1, -1).long()
-    if isinstance(x, T.autograd.Variable):
-        idx = tovar(idx)
     return x.index_select(dim, idx)
 
 def addbox(ax, b, ec, lw=1):

@@ -56,8 +56,8 @@ def build_resnet_cnn(**config):
 
 class MessageModule(nn.Module):
     def forward(self, state):
-        h, b, a, y = state
-        return h
+        h, b, b_next, a, y = state
+        return h, b_next
 
 class UpdateModule(nn.Module):
     """
@@ -126,15 +126,21 @@ class UpdateModule(nn.Module):
         self.x = x
 
     def forward(self, node_state, message):
-        h, b, a, y = node_state
+        h, b, _, a, y = node_state
         batch_size = h.shape[0]
-        message_avg = h.new(batch_size, self.h_dims).zero_() if len(message) == 0 else T.stack(message).mean(0)
-        h_new = h
+
+        if len(message) == 0:
+            h_m_avg = h.new(batch_size, self.h_dims).zero_()
+        else:
+            h_m, b_next = zip(*message)
+            h_m_avg = T.stack(h_m).mean(0)
+            b = T.stack(b_next).mean(0)
         b_new = b
+        h_new = h
 
         for i in range(self.max_recur):
             g = self.glimpse(self.x, b_new[:, None])[:, 0]
-            h_in = T.cat([self.net_h(self.cnn(g).view(batch_size, -1)), message_avg], -1)
+            h_in = T.cat([self.net_h(self.cnn(g).view(batch_size, -1)), h_m_avg], -1)
             h_new = self.h_to_h(h_in, h_new)
 
             i_new = self.net_i(h_new)
@@ -142,7 +148,7 @@ class UpdateModule(nn.Module):
             y_new = y + self.net_y(i_new)
             a_new = self.net_a(i_new)
 
-        return h_new, b_new, a_new, y_new
+        return h_new, b, b_new, a_new, y_new
 
 def update_local():
     pass
@@ -162,7 +168,7 @@ class ReadoutModule(nn.Module):
             y = self.y(h)
         else:
             h = T.stack([s[0] for s in nodes_state], 1)
-            a = F.softmax(T.stack([s[2] for s in nodes_state], 1), 1)
+            a = F.softmax(T.stack([s[3] for s in nodes_state], 1), 1)
             b_of_h = T.sum(a * h, 1)
             y = self.y(b_of_h)
         return y
@@ -218,6 +224,7 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
         self.G.init_reprs((
             x.new(batch_size, self.h_dims).zero_(),
             self.update_module.glimpse.full()[None].expand(batch_size, self.update_module.glimpse.att_params),
+            self.update_module.glimpse.full()[None].expand(batch_size, self.update_module.glimpse.att_params),
             x.new(batch_size, 1).zero_(),
             x.new(batch_size, self.n_classes).zero_(),
             ))
@@ -230,7 +237,7 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
             return self.G.readout([self.root], pretrain=True)
         else:
             for u, v in self.walk_list:
-                self.G.update_by_edge((v, u))
+                self.G.update_by_edge((u, v))
                 # update local should be inside the update module
                 #for i in self.T_MAX_RECUR:
                 #    self.G.update_local(u)

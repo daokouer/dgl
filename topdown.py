@@ -274,6 +274,7 @@ class Dump(skorch.callbacks.Callback):
         self.batch = 0
         self.correct = 0
         self.total = 0
+        self.best_acc = 0
         return self
 
     def on_epoch_begin(self, net, **kwargs):
@@ -285,13 +286,20 @@ class Dump(skorch.callbacks.Callback):
     def on_batch_end(self, net, **kwargs):
         self.batch += 1
         if kwargs['training']:
-            print('#', self.epoch, self.batch, kwargs['loss'], kwargs['valid_loss'])
+            #print('#', self.epoch, self.batch, kwargs['loss'], kwargs['valid_loss'])
+            pass
         else:
-            self.correct += kwargs['loss']
+            self.correct += kwargs['loss'].item()
             self.total += kwargs['X'].shape[0]
 
     def on_epoch_end(self, net, **kwargs):
         print('@', self.epoch, self.correct, '/', self.total)
+        acc = self.correct / self.total
+        if self.best_acc < acc:
+            self.best_acc = acc
+            net.history.record('acc_best', acc)
+        else:
+            net.history.record('acc_best', None)
 
 
 def data_generator(dataset, batch_size, shuffle):
@@ -319,10 +327,11 @@ if __name__ == "__main__":
             batch_size=batch_size,
             device='cuda' if USE_CUDA else 'cpu',
             callbacks=[
-                skorch.callbacks.Checkpoint(),
+                Dump(),
+                skorch.callbacks.Checkpoint(monitor='acc_best'),
+                skorch.callbacks.ProgressBar(),
                 skorch.callbacks.GradientNormClipping(1),
                 skorch.callbacks.LRScheduler('ReduceLROnPlateau'),
-                Dump(),
                 ],
             iterator_train=data_generator,
             iterator_train__shuffle=True,
@@ -330,5 +339,5 @@ if __name__ == "__main__":
             iterator_valid__shuffle=False,
             )
 
-    net.fit((mnist_train, mnist_valid), pretrain=True, epochs=1)
+    #net.fit((mnist_train, mnist_valid), pretrain=True, epochs=1)
     net.partial_fit((mnist_train, mnist_valid), pretrain=False)

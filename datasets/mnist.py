@@ -150,6 +150,4 @@ class MNISTMulti(Dataset):
         return self.size
 
     def __getitem__(self, i):
-        data, labels, locs = tuple(getattr(self, self.mode + '_' + k)[i] for k in ['data', 'labels', 'locs'])
-        data = data[None].expand(3, data.size()[0], data.size()[1]).float()
-        return cuda(data / 255.), (cuda(labels), cuda(locs))
+        return tuple(getattr(self, self.mode + '_' + k)[i] for k in ['data', 'labels', 'locs'])

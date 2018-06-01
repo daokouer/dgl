@@ -237,23 +237,10 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
             return self.G.readout('all', pretrain=False)
 
 
-def target_extractor(y):
-    return y[0][:, 0].cpu().numpy()
-
-
 class Net(skorch.NeuralNet):
     def initialize_criterion(self):
         # Overriding this method to skip initializing criterion as we don't use it.
         pass
-
-    def initialize_callbacks(self):
-        skorch.NeuralNet.initialize_callbacks(self)
-        # monkey patch for default scorers to use our target extractor
-        for _, cb in self.callbacks_:
-            if isinstance(cb, skorch.callbacks.BatchScoring):
-                cb.target_extractor = target_extractor
-
-        return self
 
     def get_split_datasets(self, X, y=None, **fit_params):
         # Overriding this method to use our own dataloader to change the X
@@ -267,31 +254,18 @@ class Net(skorch.NeuralNet):
         step = skorch.NeuralNet.train_step(self, Xi, yi, **fit_params)
         loss = step['loss']
         y_pred = step['y_pred']
-        acc = self.get_acc(y_pred, yi)
+        valid_loss = self.get_loss(y_pred, yi, training=False)
         return {
                 'loss': loss,
                 'y_pred': y_pred,
-                'acc': acc,
+                'valid_loss': valid_loss,
                 }
 
-    def validation_step(self, Xi, yi, **fit_params):
-        step = skorch.NeuralNet.validation_step(self, Xi, yi, **fit_params)
-        loss = step['loss']
-        y_pred = step['y_pred']
-        acc = self.get_acc(y_pred, yi)
-        return {
-                'loss': loss,
-                'y_pred': y_pred,
-                'acc': acc,
-                }
-
-    def get_loss(self, y_pred, y_true, X=None, training=True):
-        y, B = y_true
-        return F.cross_entropy(y_pred, y[:, 0])
-
-    def get_acc(self, y_pred, y_true, X=None, training=True):
-        y, B = y_true
-        return (y_pred.max(1)[1] == y[:, 0]).sum()
+    def get_loss(self, y_pred, y_true, X=None, training=False):
+        if training:
+            return F.cross_entropy(y_pred, y_true)
+        else:
+            return (y_pred.max(1)[1] == y_true).sum()
 
 
 class Dump(skorch.callbacks.Callback):
@@ -311,14 +285,21 @@ class Dump(skorch.callbacks.Callback):
     def on_batch_end(self, net, **kwargs):
         self.batch += 1
         if kwargs['training']:
-            print('#', self.epoch, self.batch, kwargs['loss'], kwargs['acc'])
+            print('#', self.epoch, self.batch, kwargs['loss'], kwargs['valid_loss'])
         else:
-            print('@', self.epoch, self.batch, kwargs['loss'], kwargs['acc'])
             self.correct += kwargs['loss']
             self.total += kwargs['X'].shape[0]
 
     def on_epoch_end(self, net, **kwargs):
         print('@', self.epoch, self.correct, '/', self.total)
+
+
+def data_generator(dataset, batch_size, shuffle):
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=True, num_workers=0)
+    for _x, _y, _B in dataloader:
+        x = _x[:, None].expand(_x.shape[0], 3, _x.shape[1], _x.shape[2]).float() / 255.
+        y = _y.squeeze(1)
+        yield cuda(x), cuda(y)
 
 
 if __name__ == "__main__":
@@ -338,22 +319,16 @@ if __name__ == "__main__":
             batch_size=batch_size,
             device='cuda' if USE_CUDA else 'cpu',
             callbacks=[
-                skorch.callbacks.BatchScoring(
-                    'accuracy',
-                    name='acc',
-                    lower_is_better=False,
-                    ),
-                skorch.callbacks.Checkpoint(monitor='acc_best'),
-                #skorch.callbacks.ProgressBar(),
+                skorch.callbacks.Checkpoint(),
                 skorch.callbacks.GradientNormClipping(1),
                 skorch.callbacks.LRScheduler('ReduceLROnPlateau'),
                 Dump(),
                 ],
-            iterator_train=DataLoader,
+            iterator_train=data_generator,
             iterator_train__shuffle=True,
-            iterator_valid=DataLoader,
+            iterator_valid=data_generator,
             iterator_valid__shuffle=False,
             )
 
-    #net.fit((mnist_train, mnist_valid), pretrain=True, epochs=1)
+    net.fit((mnist_train, mnist_valid), pretrain=True, epochs=1)
     net.partial_fit((mnist_train, mnist_valid), pretrain=False)

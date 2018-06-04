@@ -57,6 +57,19 @@ def build_resnet_cnn(**config):
 
     return nn.Sequential(*cnn_list)
 
+
+
+def init_canvas(n_nodes):
+    fig, ax = plt.subplots(2, 4)
+    fig.set_size_inches(16, 8)
+    return fig, ax
+
+
+def display_image(fig, ax, i, im):
+    im = im.detach().cpu().numpy().transpose(1, 2, 0)
+    ax[i // 4, i % 4].imshow(im, cmap='gray', vmin=0, vmax=1)
+
+
 class MessageModule(nn.Module):
     def forward(self, state):
         h, b, b_next, a, y, g = [state[k] for k in ['h', 'b', 'b_next', 'a', 'y', 'g']]
@@ -280,18 +293,6 @@ class Net(skorch.NeuralNet):
             return F.cross_entropy(y_pred, y_true)
         else:
             return (y_pred.max(1)[1] == y_true).sum()
-
-
-def init_figures(n_nodes):
-    fig, ax = plt.subplots(2, 4)
-    fig.set_size_inches(16, 8)
-    return fig, ax
-
-
-def display_image(fig, ax, i, im):
-    fig, ax = init_canvas()
-    im = im.detach().cpu().numpy().transpose(1, 2, 0)
-    ax[i // 4, i % 4].imshow(im, cmap='gray', vmin=0, vmax=1)
 
 
 class Dump(skorch.callbacks.Callback):

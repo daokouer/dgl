@@ -251,7 +251,6 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
         #TODO: the following two lines is needed for single object
         #TODO: but not useful or wrong for multi-obj
         self.G.recvfrom(self.root, [])
-        fig, ax = init_canvas()
 
         if pretrain:
             return self.G.readout([self.root], pretrain=True)
@@ -323,7 +322,7 @@ class Dump(skorch.callbacks.Callback):
 
             if self.nviz < 10:
                 n_nodes = len(net.module_.G.nodes)
-                fig, ax = init_figures(n_nodes)
+                fig, ax = init_canvas(n_nodes)
                 for i, n in enumerate(net.module_.G.nodes):
                     g = net.module_.G.get_repr(n)['g']
                     display_image(fig, ax, i, g[0])

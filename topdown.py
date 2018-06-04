@@ -9,8 +9,11 @@ import torch.nn.init as INIT
 from util import USE_CUDA, cuda
 import numpy as np
 import skorch
+from viz import VisdomWindowManager
+import matplotlib.pyplot as plt
 
 batch_size = 32
+wm = VisdomWindowManager()
 
 def dfs_walk(tree, curr, l):
     if len(tree.succ[curr]) == 0:
@@ -56,7 +59,7 @@ def build_resnet_cnn(**config):
 
 class MessageModule(nn.Module):
     def forward(self, state):
-        h, b, b_next, a, y = state
+        h, b, b_next, a, y, g = [state[k] for k in ['h', 'b', 'b_next', 'a', 'y', 'g']]
         return h, b_next
 
 class UpdateModule(nn.Module):
@@ -126,7 +129,7 @@ class UpdateModule(nn.Module):
         self.x = x
 
     def forward(self, node_state, message):
-        h, b, _, a, y = node_state
+        h, b, a, y, g = [node_state[k] for k in ['h', 'b', 'a', 'y', 'g']]
         batch_size = h.shape[0]
 
         if len(message) == 0:
@@ -148,7 +151,7 @@ class UpdateModule(nn.Module):
             y_new = y + self.net_y(i_new)
             a_new = self.net_a(i_new)
 
-        return h_new, b, b_new, a_new, y_new
+        return {'h': h_new, 'b': b, 'b_next': b_new, 'a': a_new, 'y': y_new, 'g': g}
 
 def update_local():
     pass
@@ -167,8 +170,8 @@ class ReadoutModule(nn.Module):
             h = nodes_state[0][0]
             y = self.y(h)
         else:
-            h = T.stack([s[0] for s in nodes_state], 1)
-            a = F.softmax(T.stack([s[3] for s in nodes_state], 1), 1)
+            h = T.stack([s['h'] for s in nodes_state], 1)
+            a = F.softmax(T.stack([s['a'] for s in nodes_state], 1), 1)
             b_of_h = T.sum(a * h, 1)
             y = self.y(b_of_h)
         return y
@@ -182,7 +185,7 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
                  final_pool_size=(2, 2),
                  glimpse_type='gaussian',
                  glimpse_size=(15, 15),
-                 cnn='resnet'
+                 cnn='cnn'
                  ):
         nn.Module.__init__(self)
 
@@ -206,6 +209,8 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
             h_dims=h_dims,
             n_classes=n_classes,
             final_pool_size=final_pool_size,
+            filters=filters,
+            kernel_size=kernel_size,
             cnn=cnn,
             max_recur=1,    # T_MAX_RECUR
         )
@@ -221,17 +226,19 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
         batch_size = x.shape[0]
 
         self.update_module.set_image(x)
-        self.G.init_reprs((
-            x.new(batch_size, self.h_dims).zero_(),
-            self.update_module.glimpse.full()[None].expand(batch_size, self.update_module.glimpse.att_params),
-            self.update_module.glimpse.full()[None].expand(batch_size, self.update_module.glimpse.att_params),
-            x.new(batch_size, 1).zero_(),
-            x.new(batch_size, self.n_classes).zero_(),
-            ))
+        self.G.init_reprs({
+            'h': x.new(batch_size, self.h_dims).zero_(),
+            'b': self.update_module.glimpse.full()[None].expand(batch_size, self.update_module.glimpse.att_params),
+            'b_next': self.update_module.glimpse.full()[None].expand(batch_size, self.update_module.glimpse.att_params),
+            'a': x.new(batch_size, 1).zero_(),
+            'y': x.new(batch_size, self.n_classes).zero_(),
+            'g': None,
+            })
 
         #TODO: the following two lines is needed for single object
         #TODO: but not useful or wrong for multi-obj
         self.G.recvfrom(self.root, [])
+        fig, ax = init_canvas()
 
         if pretrain:
             return self.G.readout([self.root], pretrain=True)
@@ -261,11 +268,11 @@ class Net(skorch.NeuralNet):
         step = skorch.NeuralNet.train_step(self, Xi, yi, **fit_params)
         loss = step['loss']
         y_pred = step['y_pred']
-        valid_loss = self.get_loss(y_pred, yi, training=False)
+        acc = self.get_loss(y_pred, yi, training=False)
+        self.history.record_batch('acc', acc.item())
         return {
                 'loss': loss,
                 'y_pred': y_pred,
-                'valid_loss': valid_loss,
                 }
 
     def get_loss(self, y_pred, y_true, X=None, training=False):
@@ -275,6 +282,18 @@ class Net(skorch.NeuralNet):
             return (y_pred.max(1)[1] == y_true).sum()
 
 
+def init_figures(n_nodes):
+    fig, ax = plt.subplots(2, 4)
+    fig.set_size_inches(16, 8)
+    return fig, ax
+
+
+def display_image(fig, ax, i, im):
+    fig, ax = init_canvas()
+    im = im.detach().cpu().numpy().transpose(1, 2, 0)
+    ax[i // 4, i % 4].imshow(im, cmap='gray', vmin=0, vmax=1)
+
+
 class Dump(skorch.callbacks.Callback):
     def initialize(self):
         self.epoch = 0
@@ -282,6 +301,7 @@ class Dump(skorch.callbacks.Callback):
         self.correct = 0
         self.total = 0
         self.best_acc = 0
+        self.nviz = 0
         return self
 
     def on_epoch_begin(self, net, **kwargs):
@@ -289,6 +309,7 @@ class Dump(skorch.callbacks.Callback):
         self.batch = 0
         self.correct = 0
         self.total = 0
+        self.nviz = 0
 
     def on_batch_end(self, net, **kwargs):
         self.batch += 1
@@ -298,6 +319,15 @@ class Dump(skorch.callbacks.Callback):
         else:
             self.correct += kwargs['loss'].item()
             self.total += kwargs['X'].shape[0]
+
+            if self.nviz < 10:
+                n_nodes = len(net.module_.G.nodes)
+                fig, ax = init_figures(n_nodes)
+                for i, n in enumerate(net.module_.G.nodes):
+                    g = net.module_.G.get_repr(n)['g']
+                    display_image(fig, ax, i, g[0])
+                wm.display_mpl_figure(fig, win='viz{}'.format(self.nviz))
+                self.nviz += 1
 
     def on_epoch_end(self, net, **kwargs):
         print('@', self.epoch, self.correct, '/', self.total)
@@ -321,8 +351,8 @@ if __name__ == "__main__":
     from datasets import MNISTMulti
     from torch.utils.data import DataLoader
 
-    mnist_train = MNISTMulti('.', n_digits=1, backrand=0, image_rows=50, image_cols=50, download=True)
-    mnist_valid = MNISTMulti('.', n_digits=1, backrand=0, image_rows=50, image_cols=50, download=False, mode='valid')
+    mnist_train = MNISTMulti('.', n_digits=1, backrand=0, image_rows=200, image_cols=200, download=True)
+    mnist_valid = MNISTMulti('.', n_digits=1, backrand=0, image_rows=200, image_cols=200, download=False, mode='valid')
 
     net = Net(
             module=DFSGlimpseSingleObjectClassifier,
@@ -330,13 +360,13 @@ if __name__ == "__main__":
             max_epochs=50,
             optimizer=T.optim.RMSprop,
             #optimizer__weight_decay=1e-4,
-            lr=1e-3,
+            lr=5e-4,
             batch_size=batch_size,
             device='cuda' if USE_CUDA else 'cpu',
             callbacks=[
                 Dump(),
                 skorch.callbacks.Checkpoint(monitor='acc_best'),
-                skorch.callbacks.ProgressBar(),
+                skorch.callbacks.ProgressBar(postfix_keys=['train_loss', 'valid_loss', 'acc']),
                 skorch.callbacks.GradientNormClipping(1),
                 skorch.callbacks.LRScheduler('ReduceLROnPlateau'),
                 ],
@@ -346,5 +376,5 @@ if __name__ == "__main__":
             iterator_valid__shuffle=False,
             )
 
-    #net.fit((mnist_train, mnist_valid), pretrain=True, epochs=1)
-    net.partial_fit((mnist_train, mnist_valid), pretrain=False)
+    #net.fit((mnist_train, mnist_valid), pretrain=True, epochs=50)
+    net.partial_fit((mnist_train, mnist_valid), pretrain=False, epochs=100)

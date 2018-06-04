@@ -27,9 +27,7 @@ def create_onehot(idx, size):
     return onehot
 
 def reverse(x, dim):
-    idx = T.arange(x.size()[dim] - 1, -1, -1).long()
-    if isinstance(x, T.autograd.Variable):
-        idx = tovar(idx)
+    idx = T.arange(x.size()[dim] - 1, -1, -1).long().to(x.device)
     return x.index_select(dim, idx)
 
 def addbox(ax, b, ec, lw=1):

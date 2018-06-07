@@ -13,7 +13,7 @@ from viz import VisdomWindowManager
 import matplotlib.pyplot as plt
 
 batch_size = 32
-wm = VisdomWindowManager()
+wm = VisdomWindowManager(port=10248)
 
 def dfs_walk(tree, curr, l):
     if len(tree.succ[curr]) == 0:
@@ -65,14 +65,15 @@ def init_canvas(n_nodes):
     return fig, ax
 
 
-def display_image(fig, ax, i, im):
+def display_image(fig, ax, i, im, title):
     im = im.detach().cpu().numpy().transpose(1, 2, 0)
     ax[i // 4, i % 4].imshow(im, cmap='gray', vmin=0, vmax=1)
+    ax[i // 4, i % 4].set_title(title)
 
 
 class MessageModule(nn.Module):
     def forward(self, state):
-        h, b, b_next, a, y, g = [state[k] for k in ['h', 'b', 'b_next', 'a', 'y', 'g']]
+        h, b_next = [state[k] for k in ['h', 'b_next']]
         return h, b_next
 
 class UpdateModule(nn.Module):
@@ -142,7 +143,7 @@ class UpdateModule(nn.Module):
         self.x = x
 
     def forward(self, node_state, message):
-        h, b, a, y, g = [node_state[k] for k in ['h', 'b', 'a', 'y', 'g']]
+        h, b, y, b_fix = [node_state[k] for k in ['h', 'b', 'y', 'b_fix']]
         batch_size = h.shape[0]
 
         if len(message) == 0:
@@ -150,8 +151,9 @@ class UpdateModule(nn.Module):
         else:
             h_m, b_next = zip(*message)
             h_m_avg = T.stack(h_m).mean(0)
-            b = T.stack(b_next).mean(0)
-        b_new = b
+            b = T.stack(b_next).mean(0) if b_fix is None else b_fix
+
+        b_new = b_fix = b
         h_new = h
 
         for i in range(self.max_recur):
@@ -164,7 +166,7 @@ class UpdateModule(nn.Module):
             y_new = y + self.net_y(i_new)
             a_new = self.net_a(i_new)
 
-        return {'h': h_new, 'b': b, 'b_next': b_new, 'a': a_new, 'y': y_new, 'g': g}
+        return {'h': h_new, 'b': b, 'b_next': b_new, 'a': a_new, 'y': y_new, 'g': g, 'b_fix': b_fix}
 
 def update_local():
     pass
@@ -246,6 +248,7 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
             'a': x.new(batch_size, 1).zero_(),
             'y': x.new(batch_size, self.n_classes).zero_(),
             'g': None,
+            'b_fix': None,
             })
 
         #TODO: the following two lines is needed for single object
@@ -324,8 +327,16 @@ class Dump(skorch.callbacks.Callback):
                 n_nodes = len(net.module_.G.nodes)
                 fig, ax = init_canvas(n_nodes)
                 for i, n in enumerate(net.module_.G.nodes):
-                    g = net.module_.G.get_repr(n)['g']
-                    display_image(fig, ax, i, g[0])
+                    repr_ = net.module_.G.get_repr(n)
+                    g = repr_['g']
+                    b = repr_['b']
+                    display_image(
+                            fig,
+                            ax,
+                            i,
+                            g[0],
+                            np.array_str(b[0].detach().cpu().numpy(), precision=2, suppress_small=True)
+                            )
                 wm.display_mpl_figure(fig, win='viz{}'.format(self.nviz))
                 self.nviz += 1
 

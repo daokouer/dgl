@@ -157,7 +157,8 @@ class UpdateModule(nn.Module):
         h_new = h
 
         for i in range(self.max_recur):
-            g = self.glimpse(self.x, b_new[:, None])[:, 0]
+            b_rescaled, _ = self.glimpse.rescale(b_new[:, None], False)
+            g = self.glimpse(self.x, b_rescaled)[:, 0]
             h_in = T.cat([self.net_h(self.cnn(g).view(batch_size, -1)), h_m_avg], -1)
             h_new = self.h_to_h(h_in, h_new)
 
@@ -182,7 +183,7 @@ class ReadoutModule(nn.Module):
     def forward(self, nodes_state, pretrain=False):
         if pretrain:
             assert len(nodes_state) == 1        # root only
-            h = nodes_state[0][0]
+            h = nodes_state[0]['h']
             y = self.y(h)
         else:
             h = T.stack([s['h'] for s in nodes_state], 1)
@@ -243,8 +244,8 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
         self.update_module.set_image(x)
         self.G.init_reprs({
             'h': x.new(batch_size, self.h_dims).zero_(),
-            'b': self.update_module.glimpse.full()[None].expand(batch_size, self.update_module.glimpse.att_params),
-            'b_next': self.update_module.glimpse.full()[None].expand(batch_size, self.update_module.glimpse.att_params),
+            'b': x.new(batch_size, self.update_module.glimpse.att_params).zero_(),
+            'b_next': x.new(batch_size, self.update_module.glimpse.att_params).zero_(),
             'a': x.new(batch_size, 1).zero_(),
             'y': x.new(batch_size, self.n_classes).zero_(),
             'g': None,
@@ -329,13 +330,15 @@ class Dump(skorch.callbacks.Callback):
                 for i, n in enumerate(net.module_.G.nodes):
                     repr_ = net.module_.G.get_repr(n)
                     g = repr_['g']
-                    b = repr_['b']
+                    b = net.module_.update_module.glimpse.rescale(repr_['b'], False)
                     display_image(
                             fig,
                             ax,
                             i,
                             g[0],
-                            np.array_str(b[0].detach().cpu().numpy(), precision=2, suppress_small=True)
+                            np.array_str(
+                                b[0].detach().cpu().numpy(),
+                                precision=2, suppress_small=True)
                             )
                 wm.display_mpl_figure(fig, win='viz{}'.format(self.nviz))
                 self.nviz += 1
@@ -387,5 +390,5 @@ if __name__ == "__main__":
             iterator_valid__shuffle=False,
             )
 
-    #net.fit((mnist_train, mnist_valid), pretrain=True, epochs=50)
-    net.partial_fit((mnist_train, mnist_valid), pretrain=False, epochs=100)
+    net.fit((mnist_train, mnist_valid), pretrain=True, epochs=50)
+    #net.partial_fit((mnist_train, mnist_valid), pretrain=False, epochs=100)

@@ -330,7 +330,7 @@ class Dump(skorch.callbacks.Callback):
                 for i, n in enumerate(net.module_.G.nodes):
                     repr_ = net.module_.G.get_repr(n)
                     g = repr_['g']
-                    b = net.module_.update_module.glimpse.rescale(repr_['b'], False)
+                    b, _ = net.module_.update_module.glimpse.rescale(repr_['b'], False)
                     display_image(
                             fig,
                             ax,

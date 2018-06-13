@@ -118,6 +118,8 @@ class mx_Graph(DiGraph):
         else:
             for e in self.edges:
                 self.edges[e]['m_func'] = message_func
+        if isinstance(message_func, list):
+            self.m_upd_counter = 0
 
     def register_update_func(self, update_func, nodes='all', batched=False):
         '''
@@ -130,6 +132,8 @@ class mx_Graph(DiGraph):
         else:
             for n in nodes:
                 self.node[n]['u_func'] = update_func
+        if isinstance(update_func, list):
+            self.n_upd_counter = 0
 
     def register_readout_func(self, readout_func):
         self.readout_func = readout_func
@@ -141,6 +145,10 @@ class mx_Graph(DiGraph):
             nodes_state.append(self.get_repr(n))
         return self.readout_func(nodes_state, **kwargs)
 
+    def reset_f_counter(self):
+        self.n_upd_counter = 0
+        self.m_upd_counter = 0
+
     def sendto(self, u, v):
         """Compute message on edge u->v
         Args:
@@ -149,6 +157,12 @@ class mx_Graph(DiGraph):
         """
         #TODO: work on list of u and v
         f_msg = self.edges[(u, v)].get('m_func', self.m_func)
+        if isinstance(f_msg, list):
+            f_idx = self.m_upd_counter
+            assert(f_idx < len(f_msg))
+            f_msg = f_msg[f_idx]
+            #TODO use get set
+            self.m_upd_counter + 1
         m = f_msg(self.get_repr(u))
         self.edges[(u, v)]['msg'] = m
 
@@ -160,6 +174,12 @@ class mx_Graph(DiGraph):
         """
         m = [self.edges[(v, u)]['msg'] for v in nodes]
         f_update = self.nodes[u].get('u_func', self.u_func)
+        if isinstance(f_update, list):
+            f_idx = self.n_upd_counter
+            assert(f_idx < len(f_update))
+            f_update = f_update[f_idx]
+            #TODO use get set
+            self.n_upd_counter += 1
         x_new = f_update(self.get_repr(u), m)
         self.set_repr(u, x_new)
 

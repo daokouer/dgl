@@ -199,6 +199,11 @@ class mx_Graph(DiGraph):
         for v in self.succ[u]:
             self.update_to(v)
 
+    def update_all_step(self):
+        self.sendto_ebunch(self.edges)
+        for u in self.nodes:
+            self.recvfrom(u, list(self.pred[u]))
+
     def draw(self):
         from networkx.drawing.nx_agraph import graphviz_layout
 

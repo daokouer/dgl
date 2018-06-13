@@ -163,8 +163,39 @@ class mx_Graph(DiGraph):
             f_msg = f_msg[f_idx]
             #TODO use get set
             self.m_upd_counter + 1
+
         m = f_msg(self.get_repr(u))
         self.edges[(u, v)]['msg'] = m
+
+    def sendto_prot(self, ebunch):
+        """Compute message on edge u->v
+        Args:
+            ebunch: a bunch of edges
+        """
+        #TODO: the code is unnecessarily ugly....
+        #TODO: simplify the logics
+        if isinstance(ebunch, list):
+            for u, v in ebunch:
+                f_msg = self.edges[(u, v)].get('m_func', self.m_func)
+                if isinstance(f_msg, list):
+                    f_idx = self.m_upd_counter
+                    assert(f_idx < len(f_msg))
+                    f_msg = f_msg[f_idx]
+                    #TODO use get set
+                    self.m_upd_counter + 1
+                m = f_msg(self.get_repr(u))
+                self.edges[(u, v)]['msg'] = m
+        else:
+            u, v = ebunch
+            f_msg = self.edges[(u, v)].get('m_func', self.m_func)
+            if isinstance(f_msg, list):
+                f_idx = self.m_upd_counter
+                assert(f_idx < len(f_msg))
+                f_msg = f_msg[f_idx]
+                #TODO use get set
+                self.m_upd_counter + 1
+            m = f_msg(self.get_repr(u))
+            self.edges[(u, v)]['msg'] = m
 
     def recvfrom(self, u, nodes):
         """Update u by nodes
@@ -255,3 +286,9 @@ if __name__ == '__main__':
     g.update_from(0)
     y_after = g.readout()
 
+    upd_nets = [DefaultUpdateModule(h_dims=4, net_type='gru') for i in range(2)]
+    g.register_update_func(upd_nets)
+    g.update_from(0)
+    print("update func uses %d" % g.n_upd_counter)
+    g.update_from(0)
+    print("update func uses %d" % g.n_upd_counter)

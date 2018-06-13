@@ -32,23 +32,30 @@ class DefaultUpdateModule(nn.Module):
     def __init__(self, *args, **kwargs):
         super(DefaultUpdateModule, self).__init__()
         h_dims = self.h_dims = kwargs.get('h_dims', 128)
-        net_type = self.net_type = kwargs.get('net', 'fwd')
+        net_type = self.net_type = kwargs.get('net_type', 'fwd')
+        n_func = self.n_func = kwargs.get('n_func', 1)
+        self.f_idx = 0
         self.reduce_func = DefaultReductionModule()
         if net_type == 'gru':
-            self.net = nn.GRUCell(h_dims, h_dims)
+            self.net = [nn.GRUCell(h_dims, h_dims) for i in range(n_func)]
         else:
-            self.net = nn.Linear(2 * h_dims, h_dims)
+            self.net = [nn.Linear(2 * h_dims, h_dims) for i in range(n_func)]
 
     def forward(self, x, msgs):
         if not th.is_tensor(x):
             x = th.zeros_like(msgs[0])
         m = self.reduce_func(msgs)
+        assert(self.f_idx < self.n_func)
         if self.net_type == 'gru':
-            out = self.net(m, x)
+            out = self.net[self.f_idx](m, x)
         else:
             _in = th.cat((m, x), 1)
-            out = F.relu(self.net(_in))
+            out = F.relu(self.net[self.f_idx](_in))
+        self.f_idx += 1
         return out
+
+    def reset_f_idx(self):
+        self.f_idx = 0
 
 class DefaultReductionModule(nn.Module):
     """
@@ -118,8 +125,6 @@ class mx_Graph(DiGraph):
         else:
             for e in self.edges:
                 self.edges[e]['m_func'] = message_func
-        if isinstance(message_func, list):
-            self.m_upd_counter = 0
 
     def register_update_func(self, update_func, nodes='all', batched=False):
         '''
@@ -132,8 +137,6 @@ class mx_Graph(DiGraph):
         else:
             for n in nodes:
                 self.node[n]['u_func'] = update_func
-        if isinstance(update_func, list):
-            self.n_upd_counter = 0
 
     def register_readout_func(self, readout_func):
         self.readout_func = readout_func
@@ -145,55 +148,24 @@ class mx_Graph(DiGraph):
             nodes_state.append(self.get_repr(n))
         return self.readout_func(nodes_state, **kwargs)
 
-    def reset_f_counter(self):
-        self.n_upd_counter = 0
-        self.m_upd_counter = 0
-
     def sendto(self, u, v):
         """Compute message on edge u->v
         Args:
             u: source node
             v: destination node
         """
-        #TODO: work on list of u and v
         f_msg = self.edges[(u, v)].get('m_func', self.m_func)
-        if isinstance(f_msg, list):
-            f_idx = self.m_upd_counter
-            assert(f_idx < len(f_msg))
-            f_msg = f_msg[f_idx]
-            #TODO use get set
-            self.m_upd_counter + 1
-
         m = f_msg(self.get_repr(u))
         self.edges[(u, v)]['msg'] = m
 
-    def sendto_prot(self, ebunch):
+    def sendto_ebunch(self, ebunch):
         """Compute message on edge u->v
         Args:
             ebunch: a bunch of edges
         """
-        #TODO: the code is unnecessarily ugly....
         #TODO: simplify the logics
-        if isinstance(ebunch, list):
-            for u, v in ebunch:
-                f_msg = self.edges[(u, v)].get('m_func', self.m_func)
-                if isinstance(f_msg, list):
-                    f_idx = self.m_upd_counter
-                    assert(f_idx < len(f_msg))
-                    f_msg = f_msg[f_idx]
-                    #TODO use get set
-                    self.m_upd_counter + 1
-                m = f_msg(self.get_repr(u))
-                self.edges[(u, v)]['msg'] = m
-        else:
-            u, v = ebunch
+        for u, v in ebunch:
             f_msg = self.edges[(u, v)].get('m_func', self.m_func)
-            if isinstance(f_msg, list):
-                f_idx = self.m_upd_counter
-                assert(f_idx < len(f_msg))
-                f_msg = f_msg[f_idx]
-                #TODO use get set
-                self.m_upd_counter + 1
             m = f_msg(self.get_repr(u))
             self.edges[(u, v)]['msg'] = m
 
@@ -205,12 +177,6 @@ class mx_Graph(DiGraph):
         """
         m = [self.edges[(v, u)]['msg'] for v in nodes]
         f_update = self.nodes[u].get('u_func', self.u_func)
-        if isinstance(f_update, list):
-            f_idx = self.n_upd_counter
-            assert(f_idx < len(f_update))
-            f_update = f_update[f_idx]
-            #TODO use get set
-            self.n_upd_counter += 1
         x_new = f_update(self.get_repr(u), m)
         self.set_repr(u, x_new)
 
@@ -286,9 +252,7 @@ if __name__ == '__main__':
     g.update_from(0)
     y_after = g.readout()
 
-    upd_nets = [DefaultUpdateModule(h_dims=4, net_type='gru') for i in range(2)]
+    upd_nets = DefaultUpdateModule(h_dims=4, net_type='gru', n_func=2)
     g.register_update_func(upd_nets)
     g.update_from(0)
-    print("update func uses %d" % g.n_upd_counter)
     g.update_from(0)
-    print("update func uses %d" % g.n_upd_counter)

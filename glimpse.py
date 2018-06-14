@@ -85,10 +85,16 @@ class GaussianGlimpse(NN.Module):
     def rescale(cls, x, glimpse_sample):
         if not glimpse_sample:
             y = [
-                    F.sigmoid(x[..., 0]),    # cx
-                    F.sigmoid(x[..., 1]),    # cy
-                    F.sigmoid(x[..., 2]) * 2,
-                    F.sigmoid(x[..., 3]) * 2,
+                    #F.sigmoid(x[..., 0]),    # cx
+                    #F.sigmoid(x[..., 1]),    # cy
+                    #F.sigmoid(x[..., 2]) * 2,
+                    #F.sigmoid(x[..., 3]) * 2,
+                    #F.sigmoid(x[..., 4]),
+                    #F.sigmoid(x[..., 5]),
+                    x[..., 0] + 0.5,
+                    x[..., 1] + 0.5,
+                    x[..., 2] + 1,
+                    x[..., 3] + 1,
                     F.sigmoid(x[..., 4]),
                     F.sigmoid(x[..., 5]),
                     #T.zeros_like(x[..., 4]) + 0.1,

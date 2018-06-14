@@ -104,15 +104,21 @@ class UpdateModule(nn.Module):
 
         h_dims = config['h_dims']
         n_classes = config['n_classes']
-        self.net_i = nn.Sequential(
+        self.net_b = nn.Sequential(
                 nn.Linear(h_dims, h_dims),
                 nn.ReLU(),
-                nn.Linear(h_dims, h_dims),
-                nn.ReLU(),
+                nn.Linear(h_dims, self.glimpse.att_params),
                 )
-        self.net_b = nn.Linear(h_dims, self.glimpse.att_params)
-        self.net_y = nn.Linear(h_dims, n_classes)
-        self.net_a = nn.Linear(h_dims, 1)
+        self.net_y = nn.Sequential(
+                nn.Linear(h_dims, h_dims),
+                nn.ReLU(),
+                nn.Linear(h_dims, n_classes),
+                )
+        self.net_a = nn.Sequential(
+                nn.Linear(h_dims, h_dims),
+                nn.ReLU(),
+                nn.Linear(h_dims, 1),
+                )
 
         self.h_to_h = nn.GRUCell(h_dims * 2, h_dims)
         INIT.orthogonal_(self.h_to_h.weight_hh)
@@ -162,12 +168,13 @@ class UpdateModule(nn.Module):
             h_in = T.cat([self.net_h(self.cnn(g).view(batch_size, -1)), h_m_avg], -1)
             h_new = self.h_to_h(h_in, h_new)
 
-            i_new = self.net_i(h_new)
-            b_new = b + self.net_b(i_new)
-            y_new = y + self.net_y(i_new)
-            a_new = self.net_a(i_new)
+            db = self.net_b(h_new)
+            dy = self.net_y(h_new)
+            b_new = b + db
+            y_new = y + dy
+            a_new = self.net_a(h_new)
 
-        return {'h': h_new, 'b': b, 'b_next': b_new, 'a': a_new, 'y': y_new, 'g': g, 'b_fix': b_fix}
+        return {'h': h_new, 'b': b, 'b_next': b_new, 'a': a_new, 'y': y_new, 'g': g, 'b_fix': b_fix, 'db': db}
 
 def update_local():
     pass
@@ -186,10 +193,13 @@ class ReadoutModule(nn.Module):
             h = nodes_state[0]['h']
             y = self.y(h)
         else:
-            h = T.stack([s['h'] for s in nodes_state], 1)
-            a = F.softmax(T.stack([s['a'] for s in nodes_state], 1), 1)
-            b_of_h = T.sum(a * h, 1)
-            y = self.y(b_of_h)
+            #h = T.stack([s['h'] for s in nodes_state], 1)
+            #a = F.softmax(T.stack([s['a'] for s in nodes_state], 1), 1)
+            #b_of_h = T.sum(a * h, 1)
+            #b_of_h = h[:, -1]
+            #y = self.y(b_of_h)
+            #y = nodes_state[-1]['y']
+            y = T.stack([s['y'] for s in nodes_state], 1)
         return y
 
 class DFSGlimpseSingleObjectClassifier(nn.Module):
@@ -207,7 +217,7 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
 
         #self.T_MAX_RECUR = kwarg['steps']
 
-        t = nx.balanced_tree(2, 2)
+        t = nx.balanced_tree(1, 2)
         t_uni = nx.bfs_tree(t, 0)
         self.G = mx_Graph(t)
         self.root = 0
@@ -235,8 +245,8 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
         self.readout_module = ReadoutModule(h_dims=h_dims, n_classes=n_classes)
         self.G.register_readout_func(self.readout_module)
 
-        self.walk_list = []
-        dfs_walk(t_uni, self.root, self.walk_list)
+        self.walk_list = [(0, 1), (1, 2)]
+        #dfs_walk(t_uni, self.root, self.walk_list)
 
     def forward(self, x, pretrain=False):
         batch_size = x.shape[0]
@@ -250,6 +260,7 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
             'y': x.new(batch_size, self.n_classes).zero_(),
             'g': None,
             'b_fix': None,
+            'db': None,
             })
 
         #TODO: the following two lines is needed for single object
@@ -268,6 +279,12 @@ class DFSGlimpseSingleObjectClassifier(nn.Module):
 
 
 class Net(skorch.NeuralNet):
+    def __init__(self, **kwargs):
+        self.reg_coef_ = kwargs.get('reg_coef', 1e-4)
+
+        del kwargs['reg_coef']
+        skorch.NeuralNet.__init__(self, **kwargs)
+
     def initialize_criterion(self):
         # Overriding this method to skip initializing criterion as we don't use it.
         pass
@@ -282,20 +299,33 @@ class Net(skorch.NeuralNet):
 
     def train_step(self, Xi, yi, **fit_params):
         step = skorch.NeuralNet.train_step(self, Xi, yi, **fit_params)
-        loss = step['loss']
+        dbs = [self.module_.G.get_repr(v)['db'] for v in self.module_.G.nodes]
+        reg = self.reg_coef_ * sum(db.norm(2, 1).mean() for db in dbs if db is not None)
+        loss = step['loss'] + reg
         y_pred = step['y_pred']
         acc = self.get_loss(y_pred, yi, training=False)
+        self.history.record_batch('max_param', max(p.abs().max().item() for p in self.module_.parameters()))
         self.history.record_batch('acc', acc.item())
+        self.history.record_batch('reg', reg.item())
         return {
                 'loss': loss,
                 'y_pred': y_pred,
                 }
 
     def get_loss(self, y_pred, y_true, X=None, training=False):
+        batch_size, n_steps, _ = y_pred.shape
         if training:
-            return F.cross_entropy(y_pred, y_true)
+            #return F.cross_entropy(y_pred, y_true)
+            y_true = y_true[:, None].expand(batch_size, n_steps)
+            return F.cross_entropy(
+                    y_pred.reshape(batch_size * n_steps, -1),
+                    y_true.reshape(-1)
+                    )
         else:
-            return (y_pred.max(1)[1] == y_true).sum()
+            y_prob, y_cls = y_pred.max(-1)
+            _, y_prob_maxind = y_prob.max(-1)
+            y_cls_final = y_cls.gather(1, y_prob_maxind[:, None])[:, 0]
+            return (y_cls_final == y_true).sum()
 
 
 class Dump(skorch.callbacks.Callback):
@@ -327,9 +357,15 @@ class Dump(skorch.callbacks.Callback):
             if self.nviz < 10:
                 n_nodes = len(net.module_.G.nodes)
                 fig, ax = init_canvas(n_nodes)
+                #a = T.stack([net.module_.G.get_repr(v)['a'] for v in net.module_.G.nodes], 1)
+                #a = F.softmax(a, 1).detach().cpu().numpy()
+                y = T.stack([net.module_.G.get_repr(v)['y'] for v in net.module_.G.nodes], 1)
+                y_val, y = y.max(-1)
                 for i, n in enumerate(net.module_.G.nodes):
                     repr_ = net.module_.G.get_repr(n)
                     g = repr_['g']
+                    if g is None:
+                        continue
                     b, _ = net.module_.update_module.glimpse.rescale(repr_['b'], False)
                     display_image(
                             fig,
@@ -338,7 +374,9 @@ class Dump(skorch.callbacks.Callback):
                             g[0],
                             np.array_str(
                                 b[0].detach().cpu().numpy(),
-                                precision=2, suppress_small=True)
+                                precision=2, suppress_small=True) +
+                            #'a=%.2f' % a[0, i, 0]
+                            'y=%d (%.2f)' % (y[0, i], y_val[0, i])
                             )
                 wm.display_mpl_figure(fig, win='viz{}'.format(self.nviz))
                 self.nviz += 1
@@ -364,31 +402,35 @@ def data_generator(dataset, batch_size, shuffle):
 if __name__ == "__main__":
     from datasets import MNISTMulti
     from torch.utils.data import DataLoader
+    from sklearn.model_selection import GridSearchCV
 
     mnist_train = MNISTMulti('.', n_digits=1, backrand=0, image_rows=200, image_cols=200, download=True)
     mnist_valid = MNISTMulti('.', n_digits=1, backrand=0, image_rows=200, image_cols=200, download=False, mode='valid')
 
-    net = Net(
-            module=DFSGlimpseSingleObjectClassifier,
-            criterion=None,
-            max_epochs=50,
-            optimizer=T.optim.RMSprop,
-            #optimizer__weight_decay=1e-4,
-            lr=5e-4,
-            batch_size=batch_size,
-            device='cuda' if USE_CUDA else 'cpu',
-            callbacks=[
-                Dump(),
-                skorch.callbacks.Checkpoint(monitor='acc_best'),
-                skorch.callbacks.ProgressBar(postfix_keys=['train_loss', 'valid_loss', 'acc']),
-                skorch.callbacks.GradientNormClipping(1),
-                skorch.callbacks.LRScheduler('ReduceLROnPlateau'),
-                ],
-            iterator_train=data_generator,
-            iterator_train__shuffle=True,
-            iterator_valid=data_generator,
-            iterator_valid__shuffle=False,
-            )
+    for reg_coef in [0, 100, 1e-2, 0.1, 1, 1e-3]:
+        print('Trying reg coef', reg_coef)
+        net = Net(
+                module=DFSGlimpseSingleObjectClassifier,
+                criterion=None,
+                max_epochs=50,
+                reg_coef=reg_coef,
+                optimizer=T.optim.RMSprop,
+                #optimizer__weight_decay=1e-4,
+                lr=1e-5,
+                batch_size=batch_size,
+                device='cuda' if USE_CUDA else 'cpu',
+                callbacks=[
+                    Dump(),
+                    skorch.callbacks.Checkpoint(monitor='acc_best'),
+                    skorch.callbacks.ProgressBar(postfix_keys=['train_loss', 'valid_loss', 'acc', 'reg']),
+                    skorch.callbacks.GradientNormClipping(0.01),
+                    #skorch.callbacks.LRScheduler('ReduceLROnPlateau'),
+                    ],
+                iterator_train=data_generator,
+                iterator_train__shuffle=True,
+                iterator_valid=data_generator,
+                iterator_valid__shuffle=False,
+                )
 
-    net.fit((mnist_train, mnist_valid), pretrain=True, epochs=50)
-    #net.partial_fit((mnist_train, mnist_valid), pretrain=False, epochs=100)
+        #net.fit((mnist_train, mnist_valid), pretrain=True, epochs=50)
+        net.partial_fit((mnist_train, mnist_valid), pretrain=False, epochs=500)
